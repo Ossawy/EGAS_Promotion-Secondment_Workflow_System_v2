@@ -55,3 +55,9 @@ CDS preserves every business concept under namespace `egas` and uses camelCase e
 ## Existing handwritten-schema cutover
 
 `db:migrate` refuses to deploy if it detects `egas.routing_unit` from the handwritten baseline without the CAP schema, or if both schemas exist. No destructive action is automated. A confirmed-empty development database may be recreated only after backup/verification and explicit operator approval; otherwise create a reviewed one-time data migration.
+
+## Migration execution and PostgreSQL driver warning
+
+Versioned PostgreSQL migrations are executed inside a managed CAP transaction through `@cap-js/postgres`'s `exec(sql)` path. That path delegates one bare, parameter-free string to `pg`'s simple-query protocol, so complete PostgreSQL scripts are supported without unsafe semicolon splitting. The checksum row is inserted in the same transaction only after the script succeeds. A transaction-scoped advisory lock serializes migration runners. CAP deployment remains responsible for CDS schema evolution and reference CSV seeding.
+
+With the currently locked `@sap/cds` 10.0.5, `@cap-js/postgres` 3.0.1, `@cap-js/db-service` 3.0.1 and `pg` 8.23.0, `pg` may emit `Calling client.query() when the client is already executing a query is deprecated`. The custom migration runner executes its operations sequentially. Inspection of the installed dependency sources shows concurrent same-client calls in CAP's PostgreSQL session setup (`Promise.all`) and database-service multi-entry insert path (`Promise.all`), which deployment/seeding can exercise. This is therefore documented as an upstream dependency warning; the repository does not patch `node_modules`, suppress the warning, pin an older driver, or add unsafe concurrency workarounds.

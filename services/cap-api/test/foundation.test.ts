@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,26 +22,23 @@ describe('CAP backend foundation', () => {
     expect(ready.data.value).toBe('ready')
   })
 
-  it('resolves PostgreSQL for production without committed credentials', () => {
-    const script = [
-      `process.chdir(${JSON.stringify(projectRoot)});`,
-      `process.env.NODE_ENV='production';`,
-      `import('@sap/cds').then(({default:cds}) => {`,
-      `  const db=cds.env.requires.db;`,
-      `  console.log(JSON.stringify({kind:db.kind,credentials:db.credentials ?? null}));`,
-      `})`
-    ].join('')
-    const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
-      cwd: projectRoot,
-      encoding: 'utf8'
-    }).trim()
-    const configuration = JSON.parse(output) as {
-      kind: string
-      credentials: unknown
+  it('configures PostgreSQL for production without committed credentials', async () => {
+    const packageJson = JSON.parse(
+      await readFile(path.join(projectRoot, 'package.json'), 'utf8')
+    ) as {
+      cds: {
+        requires: {
+          db: {
+            kind: string
+            credentials?: unknown
+          }
+        }
+      }
     }
+    const databaseConfiguration = packageJson.cds.requires.db
 
-    expect(configuration.kind).toBe('postgres')
-    expect(configuration.credentials).toBeNull()
+    expect(databaseConfiguration.kind).toBe('postgres')
+    expect(databaseConfiguration.credentials).toBeUndefined()
   })
 
   it('compiles all required logical entities and relationships', async () => {

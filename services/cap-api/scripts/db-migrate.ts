@@ -3,11 +3,11 @@ import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import cds from '@sap/cds'
-
-type MigrationRow = {
-  version: string
-  sha256: string
-}
+import {
+  applyTrackedPostgresMigration,
+  type AppliedMigration,
+  type PostgresSimpleQueryExecutor
+} from './postgres-script-executor.js'
 
 async function main(): Promise<void> {
   const kind = cds.env.requires?.db?.kind
@@ -67,27 +67,27 @@ async function main(): Promise<void> {
     const version = path.basename(file, '.sql')
     const sql = await readFile(path.join(migrationsDir, file), 'utf8')
     const sha256 = createHash('sha256').update(sql, 'utf8').digest('hex')
-    const applied = await db.run(
-      SELECT.one.from('egas.SchemaMigration').where({ version })
-    ) as MigrationRow | undefined
+    const result = await db.tx(async tx => {
+      // Starts the managed CAP transaction before native execution and prevents
+      // two migration processes from racing the checksum lookup/application.
+      await tx.run("SELECT pg_advisory_xact_lock(hashtext('egas_schema_migrations'))")
 
-    if (applied) {
-      if (applied.sha256 !== sha256) {
-        throw new Error(`Applied migration ${version} has changed; create a new migration instead`)
-      }
-      console.info(`Migration ${version}: already applied`)
-      continue
-    }
-
-    await db.tx(async tx => {
-      await tx.run(sql)
-      await tx.run(INSERT.into('egas.SchemaMigration').entries({
-        version,
-        sha256,
-        appliedAt: new Date().toISOString()
-      }))
+      return applyTrackedPostgresMigration({
+        executor: tx as typeof tx & PostgresSimpleQueryExecutor,
+        migration: { version, sha256, sql },
+        readApplied: async () => await tx.run(
+          SELECT.one.from('egas.SchemaMigration').where({ version })
+        ) as AppliedMigration | undefined,
+        recordApplied: async () => await tx.run(
+          INSERT.into('egas.SchemaMigration').entries({
+            version,
+            sha256,
+            appliedAt: new Date().toISOString()
+          })
+        )
+      })
     })
-    console.info(`Migration ${version}: applied`)
+    console.info(`Migration ${version}: ${result === 'applied' ? 'applied' : 'already applied'}`)
   }
 }
 
