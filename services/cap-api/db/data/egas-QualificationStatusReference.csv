@@ -1,0 +1,3 @@
+code,nameAr,displayOrder,isActive
+QUALIFIED,مستوفي,1,true
+NOT_QUALIFIED,غير مستوفي,2,true

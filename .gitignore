@@ -1,0 +1,45 @@
+# Dependencies and generated build/test output
+node_modules/
+gen/
+dist/
+coverage/
+.nyc_output/
+tmp/
+
+# Machine-local CAP and environment configuration
+.env
+.env.*
+!.env.example
+.cdsrc-private.json
+default-env.json
+
+# Real HR workbooks and import working areas
+*.xlsx
+*.xls
+*.xlsm
+runtime/imports/
+storage/imports/
+
+# Signatures, generated employee documents, and database backups
+runtime/signatures/
+storage/signatures/
+runtime/generated-pdfs/
+storage/generated-pdfs/
+output/pdf/
+backups/
+*.backup
+*.dump
+*.sql.gz
+
+# Local databases, editor files, and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated CDS model types
+@cds-models/

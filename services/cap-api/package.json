@@ -1,0 +1,101 @@
+{
+  "name": "@egas/cap-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SAP CAP TypeScript backend for the EGAS workflow system",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node scripts/setup-check.mjs",
+    "dev": "cds watch",
+    "pilot": "cds watch",
+    "start": "cds-serve",
+    "build": "npm run clean && npm run model:check && npm run types:generate && npm run typecheck && cds build --production",
+    "clean": "node scripts/clean-generated.mjs",
+    "typecheck": "tsc --noEmit",
+    "types:generate": "cds-typer \"*\" --outputDirectory @cds-models",
+    "model:check": "node scripts/model-check.mjs",
+    "lint": "npm run typecheck && npm run model:check",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:deploy": "cds deploy --to postgres",
+    "db:migrate": "node --import tsx scripts/db-migrate.ts",
+    "admin:bootstrap": "node --import tsx lib/auth/bootstrap-admin.ts",
+    "data:import": "node --import tsx lib/import/cli.ts",
+    "pilot:check": "node --import tsx scripts/pilot-check.ts",
+    "security:secrets": "node scripts/security-secrets.mjs",
+    "security:scan": "npm audit --audit-level=high && npm run typecheck",
+    "security:check": "npm run security:secrets && npm run security:scan && npm test"
+  },
+  "cds": {
+    "requires": {
+      "db": {
+        "kind": "postgres",
+        "[test]": {
+          "kind": "sqlite",
+          "credentials": {
+            "url": ":memory:"
+          }
+        }
+      },
+      "auth": {
+        "[development]": {
+          "kind": "mocked"
+        },
+        "[test]": {
+          "kind": "mocked",
+          "users": {
+            "foundation-admin": {
+              "password": "synthetic-only",
+              "roles": [
+                "ADMIN"
+              ]
+            },
+            "foundation-ea": {
+              "password": "synthetic-only",
+              "roles": [
+                "EMPLOYEE_AFFAIRS"
+              ]
+            }
+          }
+        },
+        "[production]": {
+          "impl": "srv/auth/local-auth-middleware.js"
+        }
+      }
+    },
+    "features": {
+      "assert_integrity": "db"
+    },
+    "server": {
+      "cors": false,
+      "body_parser": {
+        "limit": "1mb"
+      }
+    },
+    "odata": {
+      "maxpagesize": 100
+    }
+  },
+  "dependencies": {
+    "@cap-js/postgres": "^3.0.1",
+    "@sap/cds": "^10.0.5",
+    "argon2": "^0.45.1",
+    "exceljs": "^4.4.0",
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@cap-js/cds-test": "^1.0.2",
+    "@cap-js/cds-typer": "^0.40.2",
+    "@cap-js/cds-types": "^0.18.0",
+    "@cap-js/sqlite": "^3.0.2",
+    "@sap/cds-dk": "^10.0.7",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

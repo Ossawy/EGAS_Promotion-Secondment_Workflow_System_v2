@@ -1,0 +1,21 @@
+-- Run as the CAP schema owner/migration role after replacing both placeholders.
+-- Do not commit real role names or passwords into this file.
+-- <CAP_SCHEMA_OWNER> owns the generated tables. <EGAS_RUNTIME_ROLE> must not.
+
+GRANT CONNECT ON DATABASE <EGAS_DATABASE> TO <EGAS_RUNTIME_ROLE>;
+GRANT USAGE ON SCHEMA public TO <EGAS_RUNTIME_ROLE>;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO <EGAS_RUNTIME_ROLE>;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO <EGAS_RUNTIME_ROLE>;
+
+REVOKE UPDATE, DELETE ON TABLE
+  egas_AuditEvent,
+  egas_WorkflowNote,
+  egas_StageReceivedSnapshot,
+  egas_StageAction,
+  egas_WorkflowSignoff
+FROM <EGAS_RUNTIME_ROLE>;
+
+REVOKE CREATE ON SCHEMA public FROM <EGAS_RUNTIME_ROLE>;
+
+-- Verify separately that <EGAS_RUNTIME_ROLE> is not a superuser, table owner,
+-- member of the owner role, or granted BYPASSRLS.
