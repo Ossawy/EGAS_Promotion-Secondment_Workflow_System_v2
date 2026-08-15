@@ -1,0 +1,6 @@
+code,nameAr,displayOrder,isActive
+MANAGER_DEPARTMENT,مدير إدارة,1,true
+SECTION_HEAD,رئيس قسم,2,true
+STANDARD_FIRST,نمطي أول,3,true
+STANDARD_EXCELLENT,نمطي ممتاز,4,true
+STANDARD_SKILLED,نمطي ماهر,5,true

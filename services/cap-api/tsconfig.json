@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2023"
+    ],
+    "rootDir": ".",
+    "rootDirs": [
+      ".",
+      "./@cds-models"
+    ],
+    "outDir": "dist",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": [
+      "node",
+      "@cap-js/cds-types"
+    ]
+  },
+  "include": [
+    "lib/**/*.ts",
+    "scripts/**/*.ts",
+    "srv/**/*.ts",
+    "test/**/*.ts",
+    "@cds-models/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "gen"
+  ]
+}
