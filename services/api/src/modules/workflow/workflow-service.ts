@@ -10,6 +10,7 @@ import { EmployeeDataService } from '../employee/employee-data-service.ts'
 import { initialStage, responsibleRole, type CandidateRow, type RequestRow, type WorkflowType } from './types.ts'
 import type { CreateRequestInput } from './validation.ts'
 import { WorkflowRepository } from './workflow-repository.ts'
+import { captureReceivedSnapshot } from './form-snapshot.ts'
 
 function iso(value: Date | string): string { return new Date(value).toISOString() }
 
@@ -38,6 +39,8 @@ function candidateView(row: CandidateRow): Record<string, unknown> {
     routingUnitName: row.routingUnitName, currentJobTitle: row.currentJobTitle,
     performanceRating: row.performanceRating, qualificationSource1: row.qualificationSource1,
     qualificationSource2: row.qualificationSource2, qualificationDate: row.qualificationDate,
+    formSection: row.formSectionId ? { id: row.formSectionId, jobCategoryCode: row.jobCategoryCode, nameAr: row.jobCategoryName } : null,
+    lastPromotionReport: row.lastPromotionReport,
     displayOrder: Number(row.displayOrder), createdAt: iso(row.createdAt),
     warnings: { performanceRequiresAttention: row.performanceRating === 'جيد', performanceMissing: row.performanceRating === null }
   }
@@ -63,6 +66,8 @@ export class WorkflowService {
     if (actor.activeRole === 'EMPLOYEE_AFFAIRS' && row.createdById === actor.userId) return false
     const task = await repo.currentTask(row)
     if (actor.activeRole === responsibleRole(row.currentStage) && task?.assignedUserId === actor.userId) return true
+    if ((actor.activeRole === 'ORGANIZATION' || actor.activeRole === 'APPROVING_AUTHORITY')
+      && await repo.hasParticipated(row.id, actor.userId)) return false
     throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
   }
 
@@ -86,6 +91,8 @@ export class WorkflowService {
       await repo.insertAction(actor, requestId, iterationId, taskId, null, 'REQUEST_CREATED')
       await repo.insertAction(actor, requestId, iterationId, taskId, null, 'STAGE_TASK_CREATED', { stage })
       await recordWorkflowAudit(db, actor, evidence, { requestId, iterationId, actionCode: 'REQUEST_CREATED', toStage: stage })
+      await captureReceivedSnapshot(db, { taskId, requestId, iterationId, stageCode: stage,
+        recipientUserId: actor.userId, recipientRole: 'EMPLOYEE_AFFAIRS' })
     })
     return await this.detail(requestId, actor)
   }

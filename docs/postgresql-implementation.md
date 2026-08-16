@@ -10,7 +10,7 @@ preserved physical schema baseline
   -> services/api/src/db/migrations/*.sql (immutable applied versions)
 ```
 
-The framework migration did not rename/drop/recreate tables or modify applied migration `001_postgres_integrity.sql`. Existing databases retain all 31 `egas_*` tables plus historical `cds_model` and `cds_outbox_messages` (33 public tables total), rows, indexes, checks, triggers, and `egas_schemamigration` versions/checksums. Neither CAP technical table is used by application code.
+The framework migration did not rename/drop/recreate baseline tables or modify applied migration `001_postgres_integrity.sql`. After additive migration 006, existing databases contain 32 `egas_*` tables plus historical `cds_model` and `cds_outbox_messages` (34 public tables total), rows, indexes, checks, triggers, and `egas_schemamigration` versions/checksums. Neither CAP technical table is used by application code.
 
 ## Access and transactions
 
@@ -34,11 +34,15 @@ Migration `002_phase2b_annual_snapshot_integrity.sql` is the first Phase 2B addi
 
 Migration `003_phase3a_workflow_draft_foundation.sql` (SHA-256 `01e9e6c34657a0a6f15ce8cbbfc322c5dccc97b2a47ec177d1ea3b03662e7ec0`) is required because the preserved physical model made routing, authority, and form-section references mandatory before Phase 3A could legally know them. It permits a request shell before its first candidate, permits draft candidates before future form-section behavior, adds soft-removal evidence plus a partial active-candidate uniqueness/index, validates authority-snapshot coherence and cycle/stage codes, and fills missing workflow foreign keys on fresh preserved-baseline installations without duplicating constraints on upgraded databases. It creates no replacement workflow tables and preserves all rows.
 
+Migration `004_secondment_workflow_integrity.sql` (SHA-256 `bdbdf8846f44ab3474105a46bd2fcd9d0027d6008c4c9062c9a6fa8358e934f7`) adds the Secondment position-selection and task uniqueness invariants plus preserved physical foreign keys. Migration `005_promotion_workflow_integrity.sql` (SHA-256 `5fa7f568dc8200e51d8d58c72648d5aaf99d352432dec04db2157d199ad276db`) adds the Promotion-decision foreign keys while preserving migration 001's Same/Other Position checks.
+
+Migration `006_pdf_evidence_freeze.sql` (SHA-256 `8edff26bad677d75ba24bd88e2ff9824c61117c89782f32c8b92e787c1c60bf6`) adds one evidence table because the frozen logical schema records PDF generation but has no place to retain the final approved source snapshot or the server-only identity of immutable PDF bytes. `egas_FrozenPdfDocument` stores canonical JSON/hash at final approval (or copies an existing immutable received-stage snapshot), then permits exactly one NULL-to-materialized metadata update. Partial unique indexes enforce one received PDF per stage snapshot and one final PDF per request/iteration. A trigger rejects source-evidence changes, replacement of materialized bytes, and deletes. The runtime grant keeps `UPDATE` only for the one-time materialization guarded by that trigger and revokes `DELETE`.
+
 ## Least privilege
 
 `services/api/db/operations/least-privilege-role.sql.example` validates the database owner, accepts a `public` owner of either that role or `pg_database_owner`, verifies every public table/view/sequence owner, verifies the runtime role is restricted, and verifies the invoker can manage owner defaults. It uses `ON_ERROR_STOP`, deliberate SQL errors before `BEGIN`, and rollback-on-verification failures; no incompatible `\quit` arguments are used.
 
-The script grants CONNECT, schema USAGE, current/future table DML, and sequence USAGE/SELECT; denies database/schema CREATE and TEMPORARY; revokes write access to migration metadata; revokes UPDATE/DELETE on append-only entities; and revokes all privileges on historical CAP model/outbox tables. Rerun it after controlled migrations.
+The script grants CONNECT, schema USAGE, current/future table DML, and sequence USAGE/SELECT; denies database/schema CREATE and TEMPORARY; revokes write access to migration metadata; revokes UPDATE/DELETE on append-only entities, revokes DELETE on frozen PDF evidence, and revokes all privileges on historical CAP model/outbox tables. Rerun it after controlled migrations.
 
 ## Driver warning status
 

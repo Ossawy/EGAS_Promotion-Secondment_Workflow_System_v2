@@ -152,6 +152,10 @@ REVOKE UPDATE, DELETE ON TABLE
   egas_WorkflowSignoff
 FROM :"runtime_role";
 
+-- PDF source evidence is immutable, but the runtime may perform the one permitted
+-- NULL -> materialized metadata update protected by migration 006's trigger.
+REVOKE DELETE ON TABLE egas_FrozenPdfDocument FROM :"runtime_role";
+
 -- Migration bookkeeping belongs to the controlled migration command.
 REVOKE INSERT, UPDATE, DELETE ON TABLE egas_SchemaMigration FROM :"runtime_role";
 

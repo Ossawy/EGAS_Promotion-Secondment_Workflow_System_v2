@@ -1,4 +1,5 @@
 import { loadEnvFile } from 'node:process'
+import { resolve } from 'node:path'
 
 export type NodeEnvironment = 'development' | 'test' | 'production'
 
@@ -24,6 +25,20 @@ export type AppConfig = {
     lockoutMinutes: number
     requireSecureCookie: boolean
     allowedOrigins: ReadonlySet<string>
+  }
+  signatures: {
+    storageDirectory: string
+    maxUploadBytes: number
+    maxWidthPixels: number
+    maxHeightPixels: number
+    maxPixels: number
+  }
+  pdf: {
+    storageDirectory: string
+    maxConcurrentRenders: number
+    maxQueuedRenders: number
+    renderTimeoutMs: number
+    maxOutputBytes: number
   }
 }
 
@@ -118,6 +133,20 @@ export function loadConfig(): AppConfig {
       lockoutMinutes: integer('EGAS_LOGIN_LOCKOUT_MINUTES', 15, 1, 1_440),
       requireSecureCookie,
       allowedOrigins
+    },
+    signatures: {
+      storageDirectory: resolve(process.env.EGAS_SIGNATURE_STORAGE_DIR?.trim() || 'storage/signatures'),
+      maxUploadBytes: integer('EGAS_SIGNATURE_MAX_UPLOAD_BYTES', 1_048_576, 1_024, 5_242_880),
+      maxWidthPixels: integer('EGAS_SIGNATURE_MAX_WIDTH_PIXELS', 2_048, 64, 8_192),
+      maxHeightPixels: integer('EGAS_SIGNATURE_MAX_HEIGHT_PIXELS', 2_048, 64, 8_192),
+      maxPixels: integer('EGAS_SIGNATURE_MAX_PIXELS', 4_000_000, 4_096, 16_000_000)
+    },
+    pdf: {
+      storageDirectory: resolve(process.env.EGAS_PDF_STORAGE_DIR?.trim() || 'storage/generated-pdfs'),
+      maxConcurrentRenders: integer('EGAS_PDF_MAX_CONCURRENT_RENDERS', 2, 1, 8),
+      maxQueuedRenders: integer('EGAS_PDF_MAX_QUEUED_RENDERS', 20, 0, 100),
+      renderTimeoutMs: integer('EGAS_PDF_RENDER_TIMEOUT_MS', 15_000, 1_000, 60_000),
+      maxOutputBytes: integer('EGAS_PDF_MAX_OUTPUT_BYTES', 20_971_520, 1_048_576, 52_428_800)
     }
   }
 }

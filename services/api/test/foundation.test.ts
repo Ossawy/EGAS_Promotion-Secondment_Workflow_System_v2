@@ -11,7 +11,8 @@ describe('plain Node foundation', () => {
       const tables = await pool.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'egas_%'"
       )
-      expect(tables.rows).toHaveLength(31)
+      expect(tables.rows).toHaveLength(32)
+      expect(tables.rows).toContainEqual({ table_name: 'egas_frozenpdfdocument' })
       expect((await pool.query('SELECT id FROM egas_routingunit WHERE isactive=TRUE')).rows).toHaveLength(22)
       expect((await pool.query('SELECT code FROM egas_jobcategoryreference ORDER BY displayorder')).rows.map(row => row.code)).toEqual([
         'MANAGER_DEPARTMENT','SECTION_HEAD','STANDARD_FIRST','STANDARD_EXCELLENT','STANDARD_SKILLED'

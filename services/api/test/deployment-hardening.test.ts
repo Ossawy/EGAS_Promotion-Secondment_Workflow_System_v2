@@ -19,6 +19,7 @@ describe('least-privilege deployment SQL', () => {
     for (const table of ['egas_AuditEvent','egas_WorkflowNote','egas_StageReceivedSnapshot','egas_EmployeeAnnualSnapshot','egas_StageAction','egas_WorkflowSignoff']) {
       expect(sql).toContain(table)
     }
+    expect(sql).toContain('REVOKE DELETE ON TABLE egas_FrozenPdfDocument')
     expect(sql).toContain('REVOKE INSERT, UPDATE, DELETE ON TABLE egas_SchemaMigration')
     expect(sql).toContain('REVOKE ALL PRIVILEGES ON TABLE cds_outbox_messages FROM :"runtime_role"')
     expect(sql).toContain('AS verified_no_historical_outbox_access')

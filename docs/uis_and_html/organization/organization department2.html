@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+
+<html dir="rtl" lang="ar"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>إيجاس | الطلبات غير المسندة</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "error": "#ba1a1a",
+                        "surface-container": "#ecefe8",
+                        "inverse-surface": "#2d312d",
+                        "on-tertiary": "#ffffff",
+                        "primary": "#004321",
+                        "on-background": "#191d19",
+                        "surface": "#f7faf4",
+                        "surface-container-highest": "#e0e3dd",
+                        "on-tertiary-container": "#b3c4dd",
+                        "surface-variant": "#e0e3dd",
+                        "tertiary-container": "#415167",
+                        "tertiary-fixed-dim": "#b7c8e1",
+                        "on-secondary-container": "#626567",
+                        "background": "#f7faf4",
+                        "on-error-container": "#93000a",
+                        "on-primary-fixed-variant": "#02522a",
+                        "tertiary": "#2a3a4f",
+                        "error-container": "#ffdad6",
+                        "secondary-fixed": "#e0e3e5",
+                        "surface-tint": "#266b40",
+                        "on-secondary-fixed": "#191c1e",
+                        "surface-container-high": "#e6e9e3",
+                        "secondary-fixed-dim": "#c4c7c9",
+                        "surface-bright": "#f7faf4",
+                        "secondary-container": "#e0e3e5",
+                        "surface-container-low": "#f2f5ee",
+                        "on-primary": "#ffffff",
+                        "primary-fixed": "#abf3bc",
+                        "secondary": "#5c5f61",
+                        "on-primary-fixed": "#00210d",
+                        "on-primary-container": "#8cd29e",
+                        "outline": "#707a70",
+                        "tertiary-fixed": "#d3e4fe",
+                        "primary-fixed-dim": "#90d6a2",
+                        "on-error": "#ffffff",
+                        "surface-dim": "#d8dbd5",
+                        "on-secondary-fixed-variant": "#444749",
+                        "primary-container": "#135c33",
+                        "outline-variant": "#bfc9be",
+                        "on-secondary": "#ffffff",
+                        "inverse-on-surface": "#eff2eb",
+                        "surface-container-lowest": "#ffffff",
+                        "on-tertiary-fixed": "#0b1c30",
+                        "on-surface-variant": "#404941",
+                        "on-surface": "#191d19",
+                        "inverse-primary": "#90d6a2",
+                        "on-tertiary-fixed-variant": "#38485d"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "sidebar-width": "280px",
+                        "stack-md": "16px",
+                        "margin-mobile": "16px",
+                        "stack-sm": "8px",
+                        "container-max-width": "1440px",
+                        "stack-lg": "32px",
+                        "gutter": "24px",
+                        "header-height": "72px"
+                    },
+                    "fontFamily": {
+                        "body-lg": ["IBM Plex Sans Arabic"],
+                        "title-sm": ["IBM Plex Sans Arabic"],
+                        "label-sm": ["IBM Plex Sans Arabic"],
+                        "display-lg": ["IBM Plex Sans Arabic"],
+                        "body-md": ["IBM Plex Sans Arabic"],
+                        "display-lg-mobile": ["IBM Plex Sans Arabic"],
+                        "headline-md": ["IBM Plex Sans Arabic"]
+                    },
+                    "fontSize": {
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "title-sm": ["18px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "label-sm": ["12px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }],
+                        "display-lg": ["36px", { "lineHeight": "44px", "fontWeight": "700" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "display-lg-mobile": ["28px", { "lineHeight": "36px", "fontWeight": "700" }],
+                        "headline-md": ["24px", { "lineHeight": "32px", "fontWeight": "600" }]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        /* Custom scrollbar for better UI */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+        
+        .modal-enter {
+            opacity: 0;
+            transform: scale(0.95);
+        }
+        .modal-enter-active {
+            opacity: 1;
+            transform: scale(1);
+            transition: opacity 200ms ease-out, transform 200ms ease-out;
+        }
+        .modal-exit {
+            opacity: 1;
+            transform: scale(1);
+        }
+        .modal-exit-active {
+            opacity: 0;
+            transform: scale(0.95);
+            transition: opacity 150ms ease-in, transform 150ms ease-in;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md min-h-screen overflow-x-hidden flex">
+<!-- SideNavBar -->
+<aside class="docked fixed right-0 top-0 h-full w-sidebar-width border-l border-outline-variant dark:border-outline bg-surface dark:bg-on-background z-40 overflow-y-auto hidden md:flex flex-col pt-header-height shadow-[2px_0_4px_rgba(0,0,0,0.02)]">
+<!-- Brand/Header Area - Added manually as requested by system logic to anchor the top -->
+<div class="px-gutter py-stack-md flex flex-col items-center border-b border-outline-variant mb-4">
+<img alt="EGAS Logo" class="w-16 h-16 object-contain mb-3" data-alt="A highly professional and clean corporate logo for the Egyptian Natural Gas Holding Company (EGAS), featuring subtle geometric shapes in primary green and deep navy blue. The logo is set against a pure white background, conveying trust, authority, and modern institutional efficiency. Soft studio lighting enhances the crisp vector-like quality." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCE1a86YnmUYLZ11KkpwyV0Rg-SX1KuG0StGcMtc-53l9WBQTjmelaUrdspW1KTjG9omtoX-tW0VNE6yY5R-5bY_bsgmSY2lVcUg1YBqnqjQrOIkYHgsG8DORF_vf3Xa2xdV8_LMTLeaLKHdvgO61URg3CbdpGZIUPslbdf0uUWbrAYtOrE4m6Clo-CUrCRSRRUCimH4XZ6i86wnvLVZt2aR-sXDhc-BlVJKAGF47TB-710Vea4HdxLrQ"/>
+<h1 class="font-headline-md text-headline-md text-primary dark:text-primary-fixed">إيجاس</h1>
+<p class="font-body-md text-body-md text-on-surface-variant">بوابة الموارد البشرية</p>
+</div>
+<nav class="flex-1 flex flex-col gap-1 px-2">
+<a class="flex flex-row-reverse items-center gap-stack-md text-on-surface-variant dark:text-on-secondary-container px-4 py-3 hover:bg-surface-container dark:hover:bg-tertiary-container transition-all cursor-pointer select-none rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined" data-icon="home" style="font-variation-settings: 'FILL' 0;">home</span>
+<span class="font-title-sm text-title-sm">الرئيسية</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-stack-md bg-surface-container-highest dark:bg-primary-container text-primary dark:text-on-primary-container border-r-4 border-primary px-4 py-3 hover:bg-surface-container dark:hover:bg-tertiary-container transition-all cursor-pointer select-none rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined" data-icon="assignment_late" style="font-variation-settings: 'FILL' 1;">assignment_late</span>
+<span class="font-title-sm text-title-sm font-semibold">الطلبات غير المسندة</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-stack-md text-on-surface-variant dark:text-on-secondary-container px-4 py-3 hover:bg-surface-container dark:hover:bg-tertiary-container transition-all cursor-pointer select-none rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined" data-icon="task" style="font-variation-settings: 'FILL' 0;">task</span>
+<span class="font-title-sm text-title-sm">طلباتي</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-stack-md text-on-surface-variant dark:text-on-secondary-container px-4 py-3 hover:bg-surface-container dark:hover:bg-tertiary-container transition-all cursor-pointer select-none rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined" data-icon="notifications" style="font-variation-settings: 'FILL' 0;">notifications</span>
+<span class="font-title-sm text-title-sm">الإشعارات</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-stack-md text-on-surface-variant dark:text-on-secondary-container px-4 py-3 hover:bg-surface-container dark:hover:bg-tertiary-container transition-all cursor-pointer select-none rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined" data-icon="history" style="font-variation-settings: 'FILL' 0;">history</span>
+<span class="font-title-sm text-title-sm">البحث والسجل</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-stack-md text-on-surface-variant dark:text-on-secondary-container px-4 py-3 hover:bg-surface-container dark:hover:bg-tertiary-container transition-all cursor-pointer select-none rounded-DEFAULT mt-auto mb-2" href="#">
+<span class="material-symbols-outlined" data-icon="settings" style="font-variation-settings: 'FILL' 0;">settings</span>
+<span class="font-title-sm text-title-sm">الإعدادات</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-stack-md text-on-surface-variant dark:text-on-secondary-container px-4 py-3 hover:bg-surface-container dark:hover:bg-tertiary-container transition-all cursor-pointer select-none rounded-DEFAULT mb-4" href="#">
+<span class="material-symbols-outlined" data-icon="logout" style="font-variation-settings: 'FILL' 0;">logout</span>
+<span class="font-title-sm text-title-sm">تسجيل الخروج</span>
+</a>
+</nav>
+</aside>
+<!-- TopNavBar (Mobile mainly, but provides structural top for content) -->
+<header class="flex flex-row-reverse justify-between items-center h-header-height px-gutter w-full fixed top-0 z-50 border-b border-outline-variant dark:border-outline bg-surface dark:bg-on-background md:hidden">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary cursor-pointer" data-icon="menu" id="mobile-menu-btn">menu</span>
+<h1 class="font-title-sm text-title-sm font-bold text-primary dark:text-primary-fixed">إيجاس | بوابة الموارد البشرية</h1>
+</div>
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-primary transition-colors" data-icon="help">help</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-primary transition-colors" data-icon="notifications">notifications</span>
+<img alt="إدارة التنظيم" class="w-8 h-8 rounded-full border border-outline-variant object-cover" data-alt="A professional headshot of an Egyptian corporate executive in a modern business suit. The background is a clean, bright office environment with subtle greenery and natural sunlight filtering through large windows. The mood is confident, approachable, and trustworthy, fitting for a top-tier management dashboard profile picture." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBJtm5x1axIWg5BZ7XbWvC2tsUWa73X5QtQ5rxQWPZ8LwNjOEqEGOKmfAiJpefPYYaCmuX0ryVuzg12UgEFs5JRQ8WwdYma8fdwccgxYUUfDUNzNAZQR8D-rIULfgKmFYIN0szdfPPCiebUKwmBFzN0pd9y7xurEv0cq_4-KoLn_j-qUU1uFSJ70ed7lyVYmta83e1G0zK8nwhgLv8WOjfBYOkM-r-pSZhfgaRBSoeP5FTsws71vrOK8w"/>
+</div>
+</header>
+<!-- Main Content Area -->
+<main class="flex-1 min-h-screen pt-[88px] pb-8 px-4 md:px-gutter md:mr-[280px] w-full max-w-container-max-width mx-auto transition-all duration-300">
+<!-- Page Header -->
+<div class="mb-stack-lg flex flex-col md:flex-row md:items-end justify-between gap-4">
+<div>
+<h1 class="font-display-lg-mobile md:font-display-lg text-primary mb-2">الطلبات غير المسندة</h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant">الطلبات المتاحة لإدارة التنظيم</p>
+</div>
+<!-- Global Actions / Search -->
+<div class="flex items-center gap-3 w-full md:w-auto">
+<div class="relative w-full md:w-80">
+<span class="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant" data-icon="search">search</span>
+<input class="w-full pl-3 pr-10 py-2 bg-surface-container-lowest border border-outline-variant rounded-lg focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary font-body-md text-on-surface placeholder:text-on-surface-variant transition-colors" placeholder="ابحث برقم الطلب أو الوحدة..." type="text"/>
+</div>
+<button class="flex items-center justify-center w-10 h-10 border border-outline-variant rounded-lg text-on-surface-variant hover:bg-surface-container-low transition-colors bg-surface-container-lowest" title="تصفية">
+<span class="material-symbols-outlined" data-icon="filter_list">filter_list</span>
+</button>
+</div>
+</div>
+<!-- Filters / Tabs Area -->
+<div class="mb-stack-md flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+<button class="px-4 py-1.5 rounded-full bg-primary text-on-primary font-label-sm whitespace-nowrap">الكل (12)</button>
+<button class="px-4 py-1.5 rounded-full border border-outline-variant bg-surface-container-lowest text-on-surface hover:bg-surface-container-low font-label-sm whitespace-nowrap transition-colors">تعديل هيكل (5)</button>
+<button class="px-4 py-1.5 rounded-full border border-outline-variant bg-surface-container-lowest text-on-surface hover:bg-surface-container-low font-label-sm whitespace-nowrap transition-colors">نقل موظفين (4)</button>
+<button class="px-4 py-1.5 rounded-full border border-outline-variant bg-surface-container-lowest text-on-surface hover:bg-surface-container-low font-label-sm whitespace-nowrap transition-colors">إضافة وظيفة (3)</button>
+</div>
+<!-- Data Table Container -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden shadow-[0px_2px_4px_rgba(0,0,0,0.05)]">
+<div class="overflow-x-auto">
+<table class="w-full text-right border-collapse">
+<thead>
+<tr class="bg-surface-container-low border-b border-outline-variant">
+<th class="px-4 py-3 font-title-sm text-title-sm text-on-surface font-semibold">رقم الطلب</th>
+<th class="px-4 py-3 font-title-sm text-title-sm text-on-surface font-semibold">نوع الطلب</th>
+<th class="px-4 py-3 font-title-sm text-title-sm text-on-surface font-semibold">تاريخ الطلب</th>
+<th class="px-4 py-3 font-title-sm text-title-sm text-on-surface font-semibold text-center">عدد الموظفين</th>
+<th class="px-4 py-3 font-title-sm text-title-sm text-on-surface font-semibold">الوحدة التنظيمية</th>
+<th class="px-4 py-3 font-title-sm text-title-sm text-on-surface font-semibold">الحالة</th>
+<th class="px-4 py-3 font-title-sm text-title-sm text-on-surface font-semibold text-center">الإجراء</th>
+</tr>
+</thead>
+<tbody class="font-body-md">
+<!-- Row 1 -->
+<tr class="border-b border-outline-variant hover:bg-surface-container-low transition-colors group">
+<td class="px-4 py-4 text-on-surface-variant font-medium">REQ-2023-1042</td>
+<td class="px-4 py-4 text-on-surface">تعديل هيكل تنظيمي</td>
+<td class="px-4 py-4 text-on-surface-variant">24 أكتوبر 2023</td>
+<td class="px-4 py-4 text-on-surface text-center">-</td>
+<td class="px-4 py-4 text-on-surface">إدارة العمليات المركزية</td>
+<td class="px-4 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-tertiary-container/10 text-tertiary-container">
+                                    متاح للاستلام
+                                </span>
+</td>
+<td class="px-4 py-4 text-center">
+<button class="inline-flex items-center justify-center px-4 py-1.5 bg-primary text-on-primary rounded-lg font-label-sm hover:bg-surface-tint transition-colors active:scale-95 shadow-sm" onclick="openModal('REQ-2023-1042')">
+                                    استلام الطلب
+                                </button>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="bg-[#fafafa] border-b border-outline-variant hover:bg-surface-container-low transition-colors group">
+<td class="px-4 py-4 text-on-surface-variant font-medium">REQ-2023-1038</td>
+<td class="px-4 py-4 text-on-surface">نقل مجموعة موظفين</td>
+<td class="px-4 py-4 text-on-surface-variant">22 أكتوبر 2023</td>
+<td class="px-4 py-4 text-on-surface text-center">12</td>
+<td class="px-4 py-4 text-on-surface">قطاع الشؤون المالية</td>
+<td class="px-4 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-tertiary-container/10 text-tertiary-container">
+                                    متاح للاستلام
+                                </span>
+</td>
+<td class="px-4 py-4 text-center">
+<button class="inline-flex items-center justify-center px-4 py-1.5 bg-primary text-on-primary rounded-lg font-label-sm hover:bg-surface-tint transition-colors active:scale-95 shadow-sm" onclick="openModal('REQ-2023-1038')">
+                                    استلام الطلب
+                                </button>
+</td>
+</tr>
+<!-- Row 3 (Success State Simulation - normally hidden in unassigned, but shown here for UI demonstration) -->
+<tr class="border-b border-outline-variant bg-surface transition-colors opacity-75 pointer-events-none" id="success-row" style="display: none;">
+<td class="px-4 py-4 text-on-surface-variant font-medium">REQ-2023-1042</td>
+<td class="px-4 py-4 text-on-surface">تعديل هيكل تنظيمي</td>
+<td class="px-4 py-4 text-on-surface-variant">24 أكتوبر 2023</td>
+<td class="px-4 py-4 text-on-surface text-center">-</td>
+<td class="px-4 py-4 text-on-surface">إدارة العمليات المركزية</td>
+<td class="px-4 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#ecfdf5] text-[#065f46]">
+                                    قيد المراجعة
+                                </span>
+</td>
+<td class="px-4 py-4 text-center text-label-sm text-[#065f46] font-medium flex items-center justify-center gap-1">
+<span class="material-symbols-outlined text-[16px]" data-icon="check_circle">check_circle</span>
+                                تم الاستلام بواسطة: أحمد محمود
+                            </td>
+</tr>
+<!-- Row 4 -->
+<tr class="bg-[#fafafa] border-b border-outline-variant hover:bg-surface-container-low transition-colors group">
+<td class="px-4 py-4 text-on-surface-variant font-medium">REQ-2023-1025</td>
+<td class="px-4 py-4 text-on-surface">إضافة مسمى وظيفي</td>
+<td class="px-4 py-4 text-on-surface-variant">19 أكتوبر 2023</td>
+<td class="px-4 py-4 text-on-surface text-center">1</td>
+<td class="px-4 py-4 text-on-surface">إدارة تقنية المعلومات</td>
+<td class="px-4 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-tertiary-container/10 text-tertiary-container">
+                                    متاح للاستلام
+                                </span>
+</td>
+<td class="px-4 py-4 text-center">
+<button class="inline-flex items-center justify-center px-4 py-1.5 bg-primary text-on-primary rounded-lg font-label-sm hover:bg-surface-tint transition-colors active:scale-95 shadow-sm" onclick="openModal('REQ-2023-1025')">
+                                    استلام الطلب
+                                </button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Pagination (Static Demo) -->
+<div class="px-4 py-3 border-t border-outline-variant bg-surface-container-lowest flex items-center justify-between">
+<span class="font-body-md text-on-surface-variant text-sm">عرض 1 إلى 10 من 12 طلب</span>
+<div class="flex items-center gap-1">
+<button class="p-1 rounded text-on-surface-variant hover:bg-surface-container disabled:opacity-50" disabled="">
+<span class="material-symbols-outlined text-sm" data-icon="chevron_right">chevron_right</span>
+</button>
+<button class="w-8 h-8 rounded bg-primary text-on-primary font-label-sm flex items-center justify-center">1</button>
+<button class="w-8 h-8 rounded text-on-surface-variant hover:bg-surface-container font-label-sm flex items-center justify-center">2</button>
+<button class="p-1 rounded text-on-surface-variant hover:bg-surface-container">
+<span class="material-symbols-outlined text-sm" data-icon="chevron_left">chevron_left</span>
+</button>
+</div>
+</div>
+</div>
+</main>
+<!-- Confirmation Modal -->
+<div class="fixed inset-0 z-[100] hidden flex items-center justify-center p-4 bg-on-background/50 backdrop-blur-sm transition-opacity duration-200" id="confirmationModal">
+<div class="bg-surface-container-lowest w-full max-w-md rounded-xl shadow-lg border border-outline-variant overflow-hidden transform transition-all modal-enter" id="modalContent">
+<!-- Modal Header -->
+<div class="px-6 py-4 border-b border-outline-variant flex items-center justify-between bg-surface">
+<h3 class="font-title-sm text-title-sm text-on-surface font-semibold flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="assignment_turned_in">assignment_turned_in</span>
+                    تأكيد استلام الطلب
+                </h3>
+<button class="text-on-surface-variant hover:text-error transition-colors rounded-full p-1 hover:bg-error-container/20" onclick="closeModal()">
+<span class="material-symbols-outlined" data-icon="close">close</span>
+</button>
+</div>
+<!-- Modal Body -->
+<div class="p-6">
+<p class="font-body-lg text-body-lg text-on-surface mb-2">هل أنت متأكد من استلام هذا الطلب للعمل عليه؟</p>
+<div class="bg-surface-container-low p-3 rounded-lg border border-outline-variant mt-4">
+<span class="font-label-sm text-on-surface-variant block mb-1">رقم الطلب المحدد:</span>
+<strong class="font-body-md text-primary" id="modalReqId">REQ-2023-XXXX</strong>
+</div>
+<p class="font-body-md text-on-surface-variant mt-4 text-sm">
+                    باستلامك لهذا الطلب، سيتم إزالته من قائمة "الطلبات غير المسندة" وإضافته إلى قائمة "طلباتي" الخاصة بك لبدء المراجعة واتخاذ الإجراء.
+                </p>
+</div>
+<!-- Modal Footer -->
+<div class="px-6 py-4 bg-surface-container-low border-t border-outline-variant flex items-center justify-end gap-3">
+<button class="px-5 py-2 rounded-lg border border-outline-variant text-on-surface font-label-sm hover:bg-surface-container-lowest transition-colors bg-surface" onclick="closeModal()">
+                    إلغاء
+                </button>
+<button class="px-5 py-2 rounded-lg bg-primary text-on-primary font-label-sm hover:bg-surface-tint transition-colors shadow-sm flex items-center gap-2" onclick="confirmAction()">
+<span class="material-symbols-outlined text-sm" data-icon="check">check</span>
+                    تأكيد الاستلام
+                </button>
+</div>
+</div>
+</div>
+<!-- Success Toast (Hidden by default) -->
+<div class="fixed bottom-6 left-1/2 -translate-x-1/2 md:left-auto md:right-8 md:translate-x-0 bg-[#065f46] text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 transform translate-y-20 opacity-0 transition-all duration-300 z-[110]" id="successToast">
+<span class="material-symbols-outlined" data-icon="task_alt">task_alt</span>
+<div class="flex flex-col">
+<span class="font-label-sm font-semibold">نجاح</span>
+<span class="font-body-md text-sm">تم استلام الطلب بواسطة: أحمد محمود</span>
+</div>
+</div>
+<script>
+        const modal = document.getElementById('confirmationModal');
+        const modalContent = document.getElementById('modalContent');
+        const modalReqId = document.getElementById('modalReqId');
+        let currentReqId = null;
+
+        function openModal(reqId) {
+            currentReqId = reqId;
+            modalReqId.textContent = reqId;
+            modal.classList.remove('hidden');
+            // Trigger reflow
+            void modal.offsetWidth;
+            modalContent.classList.remove('modal-enter');
+            modalContent.classList.add('modal-enter-active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeModal() {
+            modalContent.classList.remove('modal-enter-active');
+            modalContent.classList.add('modal-exit-active');
+            
+            setTimeout(() => {
+                modal.classList.add('hidden');
+                modalContent.classList.remove('modal-exit-active');
+                modalContent.classList.add('modal-enter');
+                document.body.style.overflow = '';
+                currentReqId = null;
+            }, 150);
+        }
+
+        function confirmAction() {
+            closeModal();
+            
+            // Simulate row removal and success toast
+            setTimeout(() => {
+                // In a real app, we'd remove the row based on currentReqId
+                // For demo, we just show the success state row we pre-built
+                const tbody = document.querySelector('tbody');
+                const firstRow = tbody.firstElementChild;
+                if(firstRow) firstRow.style.display = 'none'; // hide the top one as 'taken'
+                
+                const successRow = document.getElementById('success-row');
+                if(successRow) {
+                    successRow.style.display = 'table-row';
+                    successRow.classList.add('bg-primary-container/10');
+                }
+
+                showToast();
+            }, 300);
+        }
+
+        function showToast() {
+            const toast = document.getElementById('successToast');
+            toast.style.transform = 'translateY(0)';
+            toast.style.opacity = '1';
+            
+            setTimeout(() => {
+                toast.style.transform = 'translateY(20px)';
+                toast.style.opacity = '0';
+            }, 4000);
+        }
+
+        // Close modal on outside click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeModal();
+            }
+        });
+    </script>
+</body></html>

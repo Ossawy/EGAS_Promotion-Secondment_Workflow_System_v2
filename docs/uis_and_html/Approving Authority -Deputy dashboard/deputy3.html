@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+
+<html dir="rtl" lang="ar"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ملخص الطلب - إيجاس</title>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@100..900&display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Theme Configuration -->
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "error-container": "#ffdad6",
+                    "tertiary-fixed-dim": "#b7c8e1",
+                    "surface-container": "#ecefe8",
+                    "outline": "#707a70",
+                    "on-tertiary-fixed-variant": "#38485d",
+                    "surface-variant": "#e0e3dd",
+                    "tertiary": "#2a3a4f",
+                    "on-surface": "#191d19",
+                    "surface-container-low": "#f2f5ee",
+                    "on-error-container": "#93000a",
+                    "primary-container": "#135c33",
+                    "secondary-fixed": "#e0e3e5",
+                    "inverse-surface": "#2d312d",
+                    "primary-fixed-dim": "#90d6a2",
+                    "on-primary-fixed": "#00210d",
+                    "on-primary-container": "#8cd29e",
+                    "on-tertiary-container": "#b3c4dd",
+                    "on-primary": "#ffffff",
+                    "on-surface-variant": "#404941",
+                    "on-tertiary-fixed": "#0b1c30",
+                    "secondary-fixed-dim": "#c4c7c9",
+                    "on-secondary-fixed": "#191c1e",
+                    "on-primary-fixed-variant": "#02522a",
+                    "primary-fixed": "#abf3bc",
+                    "surface-tint": "#266b40",
+                    "secondary-container": "#e0e3e5",
+                    "surface-container-lowest": "#ffffff",
+                    "surface-dim": "#d8dbd5",
+                    "on-background": "#191d19",
+                    "surface": "#f7faf4",
+                    "background": "#f7faf4",
+                    "on-error": "#ffffff",
+                    "inverse-on-surface": "#eff2eb",
+                    "tertiary-fixed": "#d3e4fe",
+                    "inverse-primary": "#90d6a2",
+                    "primary": "#004321",
+                    "error": "#ba1a1a",
+                    "tertiary-container": "#415167",
+                    "on-secondary-fixed-variant": "#444749",
+                    "surface-bright": "#f7faf4",
+                    "surface-container-high": "#e6e9e3",
+                    "on-tertiary": "#ffffff",
+                    "secondary": "#5c5f61",
+                    "on-secondary-container": "#626567",
+                    "surface-container-highest": "#e0e3dd",
+                    "outline-variant": "#bfc9be",
+                    "on-secondary": "#ffffff"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "margin-mobile": "16px",
+                    "gutter": "24px",
+                    "stack-md": "16px",
+                    "header-height": "72px",
+                    "stack-sm": "8px",
+                    "stack-lg": "32px",
+                    "sidebar-width": "280px",
+                    "container-max-width": "1440px"
+            },
+            "fontFamily": {
+                    "body-md": ["IBM Plex Sans Arabic"],
+                    "headline-md": ["IBM Plex Sans Arabic"],
+                    "display-lg-mobile": ["IBM Plex Sans Arabic"],
+                    "body-lg": ["IBM Plex Sans Arabic"],
+                    "title-sm": ["IBM Plex Sans Arabic"],
+                    "display-lg": ["IBM Plex Sans Arabic"],
+                    "label-sm": ["IBM Plex Sans Arabic"]
+            },
+            "fontSize": {
+                    "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "fontWeight": "600"}],
+                    "display-lg-mobile": ["28px", {"lineHeight": "36px", "fontWeight": "700"}],
+                    "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "title-sm": ["18px", {"lineHeight": "24px", "fontWeight": "600"}],
+                    "display-lg": ["36px", {"lineHeight": "44px", "fontWeight": "700"}],
+                    "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}]
+            }
+          },
+        },
+      }
+    </script>
+</head>
+<body class="bg-surface text-on-surface font-body-md antialiased min-h-screen">
+<!-- Top Navigation Bar -->
+<header class="fixed top-0 right-0 w-full z-50 flex justify-between items-center px-gutter h-header-height bg-surface dark:bg-inverse-surface border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-4">
+<!-- Mobile Menu Toggle -->
+<button aria-label="Toggle Menu" class="md:hidden text-primary dark:text-primary-fixed p-2">
+<span class="material-symbols-outlined">menu</span>
+</button>
+<span class="font-headline-md text-headline-md font-bold text-primary dark:text-primary-fixed">إيجاس | بوابة الموارد البشرية</span>
+</div>
+<div class="flex items-center gap-4">
+<button aria-label="Notifications" class="text-on-surface-variant hover:bg-surface-container-low transition-colors rounded-full p-2">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<div class="w-10 h-10 rounded-full overflow-hidden border border-outline-variant">
+<img alt="User Avatar" class="w-full h-full object-cover" data-alt="Professional corporate headshot of a middle-eastern male executive wearing a dark suit and tie. The lighting is bright and even, typical of a modern office environment. The background is a soft, out-of-focus light gray. The image exudes confidence and professionalism suitable for a corporate HR portal." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBhi0L_9Q9d5ESuLeG9wdadRYT-0PQQdD7V51qznG4awCK1Yh78O2YesgojTx1SXfMvuvy4k7mqmAhKwZjqWTABoPxNnSGKgLFZNnVYXDSMz1z56uH-T9Luvk-vy-0rSFsTX77--ADmN3S09_peQ1jUcBVhYmJdoIXhZWuvf9LWFmQEuaJToyqzlstD5nni1nfUV69IQ2S9nrDhQl6f61ZiRzEv4mGvjVwBdKeNP6LDPP_R6quMW12Wcg"/>
+</div>
+</div>
+</header>
+<!-- Side Navigation Bar -->
+<nav class="fixed top-0 right-0 h-full w-sidebar-width z-40 pt-header-height flex flex-col bg-surface-container dark:bg-surface-container-high border-l border-outline-variant dark:border-outline hidden md:flex">
+<!-- Header Info -->
+<div class="px-6 py-8 border-b border-outline-variant">
+<div class="flex items-center gap-4 mb-4">
+<div class="w-12 h-12 rounded-full overflow-hidden border-2 border-primary">
+<img alt="VP Avatar" class="w-full h-full object-cover" data-alt="Professional corporate headshot of a middle-eastern male executive wearing a dark suit and tie. The lighting is bright and even, typical of a modern office environment. The background is a soft, out-of-focus light gray. The image exudes confidence and professionalism suitable for a corporate HR portal." src="https://lh3.googleusercontent.com/aida-public/AB6AXuABVUB8EFy1UZ-zelj_V9YHbVPv2Z-mDAvC6Jkd3nmYgD_3UBmRwdS_Qxh-IXQJphTMAXHtj7rsu1YI2pjaPLbDwJsqnXIr1AjjY81tEAZFIENsZN7mxdQyrLrkXtIA5T4L0NtXLsgxecUVXGQ3pI-2dXsme1Ap9aRm-o6dHbKmB9jxFPGtWz4PVhUU_cvlYeb6KvI0fRQLe4rnpl0OC44M3evBZf7_O32v9rVCBzuPRlH3yw79vGJqOA"/>
+</div>
+<div>
+<h2 class="font-title-sm text-title-sm font-bold text-primary">نائب رئيس الشركة</h2>
+<p class="font-label-sm text-label-sm text-on-surface-variant">سلطة الاعتماد</p>
+</div>
+</div>
+</div>
+<!-- Navigation Links -->
+<div class="flex-1 py-4 flex flex-col gap-1">
+<a class="flex flex-row-reverse items-center gap-3 text-on-surface-variant dark:text-surface-variant px-4 py-3 hover:bg-surface-variant dark:hover:bg-inverse-surface transition-all cursor-pointer duration-200" href="#">
+<span class="material-symbols-outlined">home</span>
+<span class="font-body-md text-body-md">الرئيسية</span>
+</a>
+<!-- Active State -->
+<a class="flex flex-row-reverse items-center gap-3 bg-primary-container text-on-primary-container border-r-4 border-primary px-4 py-3 hover:bg-surface-variant transition-all cursor-pointer duration-200" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">pending_actions</span>
+<span class="font-body-md text-body-md font-bold">الطلبات</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-3 text-on-surface-variant dark:text-surface-variant px-4 py-3 hover:bg-surface-variant dark:hover:bg-inverse-surface transition-all cursor-pointer duration-200" href="#">
+<span class="material-symbols-outlined">history</span>
+<span class="font-body-md text-body-md">سجل القرارات</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-3 text-on-surface-variant dark:text-surface-variant px-4 py-3 hover:bg-surface-variant dark:hover:bg-inverse-surface transition-all cursor-pointer duration-200" href="#">
+<span class="material-symbols-outlined">notifications</span>
+<span class="font-body-md text-body-md">التنبيهات</span>
+</a>
+<a class="flex flex-row-reverse items-center gap-3 text-on-surface-variant dark:text-surface-variant px-4 py-3 hover:bg-surface-variant dark:hover:bg-inverse-surface transition-all cursor-pointer duration-200" href="#">
+<span class="material-symbols-outlined">person</span>
+<span class="font-body-md text-body-md">الملف الشخصي</span>
+</a>
+</div>
+<!-- Logout -->
+<div class="p-4 mt-auto border-t border-outline-variant">
+<a class="flex flex-row-reverse items-center gap-3 text-on-surface-variant px-4 py-3 hover:bg-error-container hover:text-on-error-container transition-all rounded-lg cursor-pointer" href="#">
+<span class="material-symbols-outlined">logout</span>
+<span class="font-body-md text-body-md">تسجيل الخروج</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="md:mr-sidebar-width pt-header-height p-gutter min-h-screen flex flex-col items-center">
+<div class="w-full max-w-container-max-width max-w-4xl">
+<!-- Breadcrumbs & Header -->
+<div class="mb-stack-lg w-full flex justify-between items-end">
+<div>
+<nav aria-label="Breadcrumb" class="flex text-on-surface-variant text-label-sm font-label-sm mb-2">
+<ol class="inline-flex items-center gap-2">
+<li class="inline-flex items-center">
+<a class="hover:text-primary" href="#">الطلبات</a>
+</li>
+<li><span class="material-symbols-outlined text-sm mx-1">chevron_left</span></li>
+<li aria-current="page" class="text-primary font-bold">ملخص الطلب</li>
+</ol>
+</nav>
+<h1 class="font-display-lg text-display-lg text-on-surface mb-2">ملخص الطلب</h1>
+<p class="text-on-surface-variant font-body-lg text-body-lg">مراجعة تفاصيل طلب الترقية قبل اتخاذ القرار النهائي.</p>
+</div>
+<div class="flex gap-4">
+<button class="flex items-center gap-2 px-6 py-3 border-2 border-outline-variant text-on-surface hover:bg-surface-container transition-colors rounded-lg font-title-sm text-title-sm">
+<span class="material-symbols-outlined">print</span>
+                        طباعة
+                    </button>
+<button class="flex items-center gap-2 px-6 py-3 bg-primary text-on-primary hover:bg-surface-tint transition-colors rounded-lg shadow-sm font-title-sm text-title-sm">
+<span class="material-symbols-outlined">gavel</span>
+                        اتخاذ القرار
+                    </button>
+</div>
+</div>
+<!-- Metadata Card (Bento-style layout) -->
+<section class="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm mb-stack-lg overflow-hidden">
+<div class="px-6 py-4 bg-surface-container border-b border-outline-variant flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">info</span>
+<h2 class="font-title-sm text-title-sm text-on-surface">معلومات الطلب الأساسية</h2>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 p-6">
+<div class="flex flex-col gap-1">
+<span class="text-label-sm font-label-sm text-on-surface-variant">رقم الطلب (ID)</span>
+<span class="font-body-lg text-body-lg font-bold text-on-surface">REQ-2023-0842</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-sm font-label-sm text-on-surface-variant">نوع الطلب</span>
+<span class="font-body-lg text-body-lg text-on-surface flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-primary-fixed"></span>
+                            ترقية سنوية
+                        </span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-sm font-label-sm text-on-surface-variant">تاريخ التقديم</span>
+<span class="font-body-lg text-body-lg text-on-surface">15 أكتوبر 2023</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-sm font-label-sm text-on-surface-variant">الوحدة التنظيمية</span>
+<span class="font-body-lg text-body-lg text-on-surface">إدارة العمليات المركزية</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-sm font-label-sm text-on-surface-variant">المرحلة الحالية</span>
+<span class="font-body-lg text-body-lg text-on-surface">مراجعة نائب الرئيس (اعتماد نهائي)</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-sm font-label-sm text-on-surface-variant">حالة الطلب</span>
+<div>
+<span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#fef3c7] text-[#92400e] font-label-sm text-label-sm border border-[#fde68a]">
+<span class="material-symbols-outlined text-sm">schedule</span>
+                                قيد الانتظار
+                            </span>
+</div>
+</div>
+</div>
+</section>
+<!-- Employees Data Section -->
+<section class="mb-stack-lg">
+<div class="flex items-center gap-3 mb-stack-md">
+<span class="material-symbols-outlined text-primary text-2xl">group</span>
+<h2 class="font-headline-md text-headline-md text-on-surface">بيانات الموظفين المشمولين بالطلب</h2>
+<span class="mr-auto bg-surface-container-high text-on-surface px-3 py-1 rounded-full text-label-sm font-label-sm">2 موظف</span>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+<!-- Employee Card 1 -->
+<article class="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col h-full">
+<div class="p-6 border-b border-outline-variant flex items-start gap-4">
+<div class="w-16 h-16 rounded-full overflow-hidden border border-outline-variant shrink-0">
+<img alt="Avatar" class="w-full h-full object-cover" data-alt="Professional corporate headshot of a young middle-eastern female employee wearing a light grey blazer. The lighting is bright and even, typical of a modern office environment. The background is a soft, out-of-focus light gray. The image exudes confidence and professionalism suitable for a corporate HR portal." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDqt2happuYxj-0QIMQUV6_gL-m3H5g3JC3BzLzQYnMDSoWVZ290ZphF3mREp7E3XSzY4_vPCgV5vcsjOHHrdjvzhK2il8wOGXF7aBDpBjb8J-WGYv07MKmb734P69yIweh3RA6fftKgX7o-yV2BaX1zbuBb4Zm3Ja77DUpEN4ccdJG7KlGYWv800IIxzmMyc3FcfgTH9pUghlvI_3e5EDQqahRrgvwEQJi2-UKB4s0h5cp65imeqnuAw"/>
+</div>
+<div class="flex flex-col">
+<h3 class="font-title-sm text-title-sm text-on-surface mb-1">سارة أحمد محمود</h3>
+<div class="flex items-center gap-3 text-on-surface-variant text-label-sm font-label-sm mb-2">
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">badge</span> EMP-8472</span>
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">corporate_fare</span> قسم الجودة</span>
+</div>
+<span class="inline-block bg-surface-container text-on-surface px-3 py-1 rounded-md text-label-sm font-label-sm border border-outline-variant w-fit">
+                                    مهندس جودة أول
+                                </span>
+</div>
+</div>
+<div class="p-6 bg-surface-container-low flex-1 flex flex-col gap-4">
+<h4 class="text-label-sm font-label-sm text-on-surface-variant border-b border-outline-variant pb-2">البيانات السنوية والتقييم</h4>
+<div class="grid grid-cols-2 gap-4">
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">تقييم الأداء (2022)</span>
+<span class="block font-title-sm text-title-sm text-primary">ممتاز (94%)</span>
+</div>
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">أيام الغياب</span>
+<span class="block font-title-sm text-title-sm text-on-surface">3 أيام</span>
+</div>
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">سنوات الخدمة</span>
+<span class="block font-title-sm text-title-sm text-on-surface">5 سنوات</span>
+</div>
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">الدرجة الحالية</span>
+<span class="block font-title-sm text-title-sm text-on-surface">الثالثة</span>
+</div>
+</div>
+</div>
+</article>
+<!-- Employee Card 2 -->
+<article class="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm hover:shadow-md transition-shadow flex flex-col h-full">
+<div class="p-6 border-b border-outline-variant flex items-start gap-4">
+<div class="w-16 h-16 rounded-full overflow-hidden border border-outline-variant shrink-0">
+<img alt="Avatar" class="w-full h-full object-cover" data-alt="Professional corporate headshot of a middle-aged middle-eastern male employee wearing glasses and a light blue shirt. The lighting is bright and even, typical of a modern office environment. The background is a soft, out-of-focus light gray. The image exudes confidence and professionalism suitable for a corporate HR portal." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCrk0Zfhk_11AIWLI6nwwcj3BaJh5snyWS3aNIc8Tt1f7pNeDqxxQPUBqutteBOu27qfEol9jn3YJJZFZ6n3zPpYatM7uaKUldEzo2dkFhAdLaomRJoVbzMkjqu8KOk_rwcbmcTb0uRZ8tvI8njjUF70VTPtbCk5vAbGAPI9lgX7HkreTcCempe5cTH8WUDnUNcAIjhQCe6agRHZP0_vLFzz-h9bE9Oa2QLzaYPB2GlMu80punCZePXag"/>
+</div>
+<div class="flex flex-col">
+<h3 class="font-title-sm text-title-sm text-on-surface mb-1">محمد طارق عبدالرحمن</h3>
+<div class="flex items-center gap-3 text-on-surface-variant text-label-sm font-label-sm mb-2">
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">badge</span> EMP-9103</span>
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">corporate_fare</span> قسم الصيانة</span>
+</div>
+<span class="inline-block bg-surface-container text-on-surface px-3 py-1 rounded-md text-label-sm font-label-sm border border-outline-variant w-fit">
+                                    مشرف صيانة ميكانيكية
+                                </span>
+</div>
+</div>
+<div class="p-6 bg-surface-container-low flex-1 flex flex-col gap-4">
+<h4 class="text-label-sm font-label-sm text-on-surface-variant border-b border-outline-variant pb-2">البيانات السنوية والتقييم</h4>
+<div class="grid grid-cols-2 gap-4">
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">تقييم الأداء (2022)</span>
+<span class="block font-title-sm text-title-sm text-primary">جيد جداً (88%)</span>
+</div>
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">أيام الغياب</span>
+<span class="block font-title-sm text-title-sm text-on-surface">1 يوم</span>
+</div>
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">سنوات الخدمة</span>
+<span class="block font-title-sm text-title-sm text-on-surface">8 سنوات</span>
+</div>
+<div>
+<span class="block text-label-sm text-on-surface-variant mb-1">الدرجة الحالية</span>
+<span class="block font-title-sm text-title-sm text-on-surface">الثانية</span>
+</div>
+</div>
+</div>
+</article>
+</div>
+</section>
+</div>
+</main>
+</body></html>

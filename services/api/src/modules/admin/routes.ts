@@ -10,6 +10,8 @@ import { AdminService, type AdminActor } from './admin-service.ts'
 import { AuthorityService } from '../authorities/authority-service.ts'
 import { ImportService, type ImportActor } from '../import/import-service.ts'
 import { RoutingAliasService } from '../import/routing-alias-service.ts'
+import { AdminReadService } from './admin-read-service.ts'
+import { PdfService } from '../workflow/pdf-service.ts'
 
 function actor(res: Parameters<typeof authContext>[0]): AdminActor {
   const auth = authContext(res)
@@ -66,9 +68,28 @@ export function adminRouter(pool: Pool, config: AppConfig): Router {
   const authorities = new AuthorityService(pool)
   const imports = new ImportService(pool)
   const aliases = new RoutingAliasService(pool)
+  const reads = new AdminReadService(pool)
+  const pdf = new PdfService(pool, config)
   const csrf = csrfProtection(pool, config)
 
   router.use(requireAdmin)
+
+  router.get('/overview', async (_req, res) => res.json(await reads.overview()))
+  router.get('/audit-events', async (req, res) => {
+    res.json(await reads.audit({
+      skip: integer(req.query.skip, 0, 'skip'), top: integer(req.query.top, 50, 'top'),
+      eventType: req.query.eventType, actor: req.query.actor, from: req.query.from, to: req.query.to
+    }))
+  })
+  router.get('/workflow-audit.pdf', async (req, res) => {
+    const result = await pdf.adminAudit({ requestId: req.query.requestId, routingUnitId: req.query.routingUnitId,
+      periodCode: req.query.periodCode, periodStart: req.query.periodStart, periodEnd: req.query.periodEnd }, authContext(res))
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Cache-Control', 'private, no-store')
+    res.setHeader('Content-Disposition', `inline; filename="${result.filename.replace(/[^A-Za-z0-9._-]/g, '_')}"`)
+    res.send(result.buffer)
+  })
 
   router.get('/users', async (req, res) => {
     res.json(await accounts.listUsers(

@@ -65,6 +65,13 @@ export class NotificationService {
     return result.rows.map(view)
   }
 
+  async unreadCount(userId: string): Promise<number> {
+    const result = await this.pool.query<{ count: number }>(
+      `SELECT COUNT(*)::integer AS count FROM egas_notification WHERE recipientuser_id=$1 AND readat IS NULL`, [userId]
+    )
+    return Number(result.rows[0]?.count ?? 0)
+  }
+
   async markRead(userId: string, notificationValue: unknown): Promise<Record<string, unknown>> {
     const notificationId = uuid(notificationValue, 'notificationId')
     return await withTransaction(this.pool, async db => {

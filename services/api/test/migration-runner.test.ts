@@ -76,20 +76,28 @@ describe('PostgreSQL migration runner', () => {
     expect(release).toHaveBeenCalledOnce()
   })
 
-  it('loads additive Phase 2B and Phase 3A migrations after immutable 001', async () => {
+  it('loads additive implementation migrations after immutable 001', async () => {
     const migrations = await loadMigrations()
     expect(migrations.map(migration => migration.version)).toEqual([
-      '001_postgres_integrity','002_phase2b_annual_snapshot_integrity','003_phase3a_workflow_draft_foundation'
+      '001_postgres_integrity','002_phase2b_annual_snapshot_integrity','003_phase3a_workflow_draft_foundation',
+      '004_secondment_workflow_integrity','005_promotion_workflow_integrity','006_pdf_evidence_freeze'
     ])
     expect(migrations[1]?.sql).toContain('uq_egas_activated_import_batch_per_year')
     expect(migrations[1]?.sql).toContain('trg_egas_employee_annual_snapshot_append_only')
     expect(migrations[2]?.sql).toContain('uq_egas_active_candidate_request_snapshot')
     expect(migrations[2]?.sql).toContain('removedBy_ID')
     expect(migrations[2]?.sql).toContain('ck_egas_request_current_stage')
+    expect(migrations[3]?.sql).toContain('uq_egas_secondment_selected_candidate_iteration')
+    expect(migrations[3]?.sql).toContain('ck_egas_secondment_position_selection')
+    expect(migrations[4]?.sql).toContain('c__egas_promotiondecision_candidate')
+    expect(migrations[5]?.sql).toContain('trg_egas_frozen_pdf_document_protect')
     expect(migrations.map(migration => migration.sha256)).toEqual([
       '760a0c27322cd44f18bd57854fedccad334aabfe985052e70f853cbb5a2aae6f',
       '0d423387e20104188d9755209eabd58f354cff41a30ca7a32ff8350fd1d66b40',
-      '01e9e6c34657a0a6f15ce8cbbfc322c5dccc97b2a47ec177d1ea3b03662e7ec0'
+      '01e9e6c34657a0a6f15ce8cbbfc322c5dccc97b2a47ec177d1ea3b03662e7ec0',
+      'bdbdf8846f44ab3474105a46bd2fcd9d0027d6008c4c9062c9a6fa8358e934f7',
+      '5fa7f568dc8200e51d8d58c72648d5aaf99d352432dec04db2157d199ad276db',
+      '8edff26bad677d75ba24bd88e2ff9824c61117c89782f32c8b92e787c1c60bf6'
     ])
   })
 })

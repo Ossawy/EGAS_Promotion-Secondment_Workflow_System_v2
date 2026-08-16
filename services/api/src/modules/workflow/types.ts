@@ -50,6 +50,10 @@ export interface CandidateRow {
   qualificationSource1: string | null
   qualificationSource2: string | null
   qualificationDate: string | null
+  formSectionId: string | null
+  jobCategoryCode: string | null
+  jobCategoryName: string | null
+  lastPromotionReport: string | null
   displayOrder: number
   createdAt: Date | string
 }

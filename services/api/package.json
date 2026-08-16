@@ -31,20 +31,25 @@
     "data:activate": "node dist/modules/import/activate-cli.js",
     "prepilot:check": "npm run build",
     "pilot:check": "node dist/scripts/pilot-check.js",
+    "pdf:visual-check": "npm run build && node scripts/pdf-visual-check.mjs",
     "security:secrets": "node scripts/security-secrets.mjs",
     "security:scan": "npm audit --audit-level=high && npm run typecheck",
     "security:check": "npm run security:secrets && npm run security:scan && npm test"
   },
   "dependencies": {
+    "@ibm/plex-sans-arabic": "^1.1.0",
     "argon2": "^0.45.1",
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
     "jszip": "^3.10.1",
-    "pg": "^8.16.3"
+    "pdfkit": "^0.17.2",
+    "pg": "^8.16.3",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.2.0",
+    "@types/pdfkit": "^0.17.5",
     "@types/pg": "^8.15.6",
     "pg-mem": "^3.0.5",
     "typescript": "^7.0.2",

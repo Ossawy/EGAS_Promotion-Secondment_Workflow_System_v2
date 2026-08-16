@@ -20,6 +20,11 @@ export function createApp(pool: Pool, config: AppConfig): Express {
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.setHeader('Referrer-Policy', 'no-referrer')
     res.setHeader('X-Frame-Options', 'DENY')
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()')
+    if (_req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store')
+    if (config.nodeEnv === 'production' && config.auth.requireSecureCookie) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    }
     next()
   })
   app.use(express.json({ limit: '1mb', strict: true }))

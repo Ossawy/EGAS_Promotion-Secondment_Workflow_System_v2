@@ -28,7 +28,8 @@ function candidateProjection(): string {
     c.qualificationsource1snapshot AS "qualificationSource1",
     c.qualificationsource2snapshot AS "qualificationSource2",
     c.qualificationdatesnapshot AS "qualificationDate",c.displayorder AS "displayOrder",
-    c.createdat AS "createdAt"`
+    c.formsection_id AS "formSectionId",fs.jobcategory_code AS "jobCategoryCode",
+    jc.namear AS "jobCategoryName",c.lastpromotionreport AS "lastPromotionReport",c.createdat AS "createdAt"`
 }
 
 export type AuthorityOptionRow = {
@@ -111,15 +112,16 @@ export class WorkflowRepository {
     taskId: string | null,
     candidateId: string | null,
     actionCode: string,
-    payload: Record<string, string | number | boolean | null> = {}
+    payload: Record<string, string | number | boolean | null> = {},
+    reason: string | null = null
   ): Promise<void> {
     await this.db.query(
       `INSERT INTO egas_stageaction
         (id,request_id,iteration_id,stagetask_id,requestcandidate_id,actoruser_id,
-         actorrolesnapshot,actioncode,payloadjson,createdat)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,CURRENT_TIMESTAMP)`,
+         actorrolesnapshot,actioncode,reason,payloadjson,createdat)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,CURRENT_TIMESTAMP)`,
       [randomUUID(), requestId, iterationId, taskId, candidateId, actor.userId,
-        actor.activeRole, actionCode, JSON.stringify(payload)]
+        actor.activeRole, actionCode, reason, JSON.stringify(payload)]
     )
   }
 
@@ -174,10 +176,20 @@ export class WorkflowRepository {
     return result.rows[0]
   }
 
+  async hasParticipated(requestId: string, userId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `SELECT 1 FROM egas_stagetask WHERE request_id=$1 AND assigneduser_id=$2 LIMIT 1`,
+      [requestId, userId]
+    )
+    return Boolean(result.rows[0])
+  }
+
   async candidates(requestId: string): Promise<CandidateRow[]> {
     const result = await this.db.query<CandidateRow>(
       `SELECT ${candidateProjection()} FROM egas_requestcandidate c
        JOIN egas_employeeannualsnapshot s ON s.id=c.employeesnapshot_id
+       LEFT JOIN egas_requestformsection fs ON fs.id=c.formsection_id
+       LEFT JOIN egas_jobcategoryreference jc ON jc.code=fs.jobcategory_code
        WHERE c.request_id=$1 AND c.removedat IS NULL ORDER BY c.displayorder,c.createdat,c.id`, [requestId]
     )
     return result.rows
@@ -187,6 +199,8 @@ export class WorkflowRepository {
     const result = await this.db.query<CandidateRow>(
       `SELECT ${candidateProjection()} FROM egas_requestcandidate c
        JOIN egas_employeeannualsnapshot s ON s.id=c.employeesnapshot_id
+       LEFT JOIN egas_requestformsection fs ON fs.id=c.formsection_id
+       LEFT JOIN egas_jobcategoryreference jc ON jc.code=fs.jobcategory_code
        WHERE c.request_id=$1 AND c.id=$2 AND c.removedat IS NULL`, [requestId, candidateId]
     )
     return result.rows[0]
@@ -332,15 +346,17 @@ export class WorkflowRepository {
       taskId: string, requestId: string, requestNumber: string, requestType: WorkflowType,
       cycleYear: number, stageCode: WorkflowStage, taskStatus: string,
       assignedUserId: string | null, claimantName: string | null, openedAt: Date | string,
-      candidateCount: number
+      candidateCount: number, routingUnitName: string | null
     }>(
       `SELECT t.id AS "taskId",r.id AS "requestId",r.requestnumber AS "requestNumber",
               r.requesttype AS "requestType",r.cycleyear AS "cycleYear",t.stagecode AS "stageCode",
               t.taskstatus AS "taskStatus",t.assigneduser_id AS "assignedUserId",
               claimant.displayname AS "claimantName",t.openedat AS "openedAt",
-              COALESCE(cc.candidatecount,0)::integer AS "candidateCount"
+              COALESCE(cc.candidatecount,0)::integer AS "candidateCount",
+              ru.namear AS "routingUnitName"
          FROM egas_stagetask t
          JOIN egas_workflowrequest r ON r.id=t.request_id
+         LEFT JOIN egas_routingunit ru ON ru.id=r.routingunit_id
          LEFT JOIN egas_useraccount claimant ON claimant.id=t.assigneduser_id
          LEFT JOIN (SELECT request_id,COUNT(*) AS candidatecount FROM egas_requestcandidate
                      WHERE removedat IS NULL GROUP BY request_id) cc ON cc.request_id=r.id
@@ -354,6 +370,35 @@ export class WorkflowRepository {
       openedAt: new Date(row.openedAt).toISOString(),
       claimable: row.taskStatus === 'OPEN' && row.assignedUserId === null,
       claimedByMe: row.assignedUserId === userId
+    }))
+  }
+
+  async authorityQueue(userId: string, skip: number, top: number): Promise<Record<string, unknown>[]> {
+    const result = await this.db.query<{
+      taskId: string, requestId: string, requestNumber: string, requestType: WorkflowType,
+      cycleYear: number, stageCode: WorkflowStage, taskStatus: string,
+      openedAt: Date | string, candidateCount: number, routingUnitName: string | null
+    }>(
+      `SELECT t.id AS "taskId",r.id AS "requestId",r.requestnumber AS "requestNumber",
+              r.requesttype AS "requestType",r.cycleyear AS "cycleYear",t.stagecode AS "stageCode",
+              t.taskstatus AS "taskStatus",t.openedat AS "openedAt",
+              COALESCE(cc.candidatecount,0)::integer AS "candidateCount",
+              ru.namear AS "routingUnitName"
+         FROM egas_stagetask t
+         JOIN egas_workflowrequest r ON r.id=t.request_id
+         LEFT JOIN egas_routingunit ru ON ru.id=r.routingunit_id
+         LEFT JOIN (SELECT request_id,COUNT(*) AS candidatecount FROM egas_requestcandidate
+                     WHERE removedat IS NULL GROUP BY request_id) cc ON cc.request_id=r.id
+        WHERE t.stagecode IN ('P4','S3') AND t.taskstatus IN ('OPEN','CLAIMED')
+          AND t.assigneduser_id=$1
+        ORDER BY t.openedat,t.id LIMIT $2 OFFSET $3`, [userId, top, skip]
+    )
+    return result.rows.map(row => ({
+      ...row,
+      cycleYear: Number(row.cycleYear),
+      candidateCount: Number(row.candidateCount),
+      openedAt: new Date(row.openedAt).toISOString(),
+      actionable: true
     }))
   }
 

@@ -4,6 +4,7 @@
   "private": true,
   "description": "EGAS Promotion & Secondment Workflow System monorepo",
   "workspaces": [
+    "apps/*",
     "services/*"
   ],
   "engines": {
@@ -17,12 +18,13 @@
   "scripts": {
     "setup": "npm --workspace @egas/api run setup",
     "dev": "npm --workspace @egas/api run dev",
+    "dev:web": "npm --workspace @egas/web run dev",
     "pilot": "npm --workspace @egas/api run pilot",
     "start": "npm --workspace @egas/api run start",
-    "build": "npm --workspace @egas/api run build",
-    "typecheck": "npm --workspace @egas/api run typecheck",
-    "lint": "npm --workspace @egas/api run lint",
-    "test": "npm --workspace @egas/api run test",
+    "build": "npm --workspace @egas/api run build && npm --workspace @egas/web run build",
+    "typecheck": "npm --workspace @egas/api run typecheck && npm --workspace @egas/web run typecheck",
+    "lint": "npm --workspace @egas/api run lint && npm --workspace @egas/web run typecheck",
+    "test": "npm --workspace @egas/api run test && npm --workspace @egas/web run test",
     "db:migrate": "npm --workspace @egas/api run db:migrate",
     "admin:bootstrap": "npm --workspace @egas/api run admin:bootstrap",
     "data:import": "npm --workspace @egas/api run data:import --",
@@ -31,7 +33,7 @@
     "pilot:check": "npm --workspace @egas/api run pilot:check",
     "security:secrets": "npm --workspace @egas/api run security:secrets",
     "security:scan": "npm --workspace @egas/api run security:scan",
-    "security:check": "npm --workspace @egas/api run security:check"
+    "security:check": "npm --workspace @egas/api run security:secrets && npm --workspace @egas/api run security:scan && npm test"
   },
   "allowScripts": {
     "argon2@0.45.1": true,

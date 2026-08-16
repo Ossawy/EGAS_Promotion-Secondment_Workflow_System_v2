@@ -7,12 +7,20 @@ import { recordWorkflowAudit } from '../audit/workflow-audit.ts'
 import type { AuthContext } from '../auth/types.ts'
 import { isOrganizationStage } from './types.ts'
 import { WorkflowRepository } from './workflow-repository.ts'
+import { captureReceivedSnapshot } from './form-snapshot.ts'
 
 export class TaskService {
   constructor(private readonly pool: Pool) {}
 
   async organizationQueue(actor: AuthContext, skip: number, top: number): Promise<Record<string, unknown>[]> {
     return await new WorkflowRepository(this.pool).organizationQueue(actor.userId, skip, top)
+  }
+
+  async authorityQueue(actor: AuthContext, skip: number, top: number): Promise<Record<string, unknown>[]> {
+    if (actor.activeRole !== 'APPROVING_AUTHORITY') {
+      throw new AppError(403, 'Active APPROVING_AUTHORITY role required', 'ACTIVE_ROLE_REQUIRED')
+    }
+    return await new WorkflowRepository(this.pool).authorityQueue(actor.userId, skip, top)
   }
 
   async claim(taskValue: unknown, actor: AuthContext, evidence: RequestEvidence): Promise<Record<string, unknown>> {
@@ -30,6 +38,9 @@ export class TaskService {
       await recordWorkflowAudit(db, actor, evidence, { requestId: claimed.requestId, iterationId: claimed.iterationId,
         routingUnitId: request?.routingUnitId ?? null, authorityAssignmentId: request?.authorityAssignmentId ?? null,
         actionCode: 'TASK_CLAIMED', fromStage: claimed.stageCode, toStage: claimed.stageCode })
+      await captureReceivedSnapshot(db, { taskId: claimed.id, requestId: claimed.requestId,
+        iterationId: claimed.iterationId, stageCode: claimed.stageCode,
+        recipientUserId: actor.userId, recipientRole: 'ORGANIZATION' })
       return { taskId: claimed.id, requestId: claimed.requestId, stageCode: claimed.stageCode,
         taskStatus: claimed.taskStatus, assignedUserId: claimed.assignedUserId,
         claimedAt: claimed.claimedAt ? new Date(claimed.claimedAt).toISOString() : null }

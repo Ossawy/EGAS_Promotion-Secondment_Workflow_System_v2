@@ -59,6 +59,15 @@ describe('explicit REST surface', () => {
     expect((await fetch(`${origin}/odata/v4/admin/Users`)).status).toBe(404)
   })
 
+  it('sets defensive browser headers and prevents API response caching', async () => {
+    const response = await fetch(`${origin}/api/reference/routing-units`)
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(response.headers.get('x-frame-options')).toBe('DENY')
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+    expect(response.headers.get('permissions-policy')).toContain('camera=()')
+    expect(response.headers.get('cache-control')).toBe('no-store')
+  })
+
   it('requires authentication for reference/admin APIs', async () => {
     expect((await fetch(`${origin}/api/reference/routing-units`)).status).toBe(401)
     expect((await fetch(`${origin}/api/admin/users`)).status).toBe(401)

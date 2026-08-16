@@ -51,22 +51,23 @@ PostgreSQL folds the unquoted CAP-generated names below to lowercase in catalog 
 | `RoutingUnitSourceAlias` | `egas_routingunitsourcealias` | Active Phase 2B Admin-managed exact mapping |
 | `ApprovingAuthorityAssignment` | `egas_approvingauthorityassignment` | Active Phase 2A |
 | `AuthorityDelegation` | `egas_authoritydelegation` | Active Phase 2A |
-| `UserSignatureAsset` | `egas_usersignatureasset` | Preserved; signatures deferred |
+| `UserSignatureAsset` | `egas_usersignatureasset` | Active secure canonical signature storage |
 | `WorkflowRequest` | `egas_workflowrequest` | Active Phase 3A draft root |
-| `RequestFormSection` | `egas_requestformsection` | Preserved; workflow deferred |
+| `RequestFormSection` | `egas_requestformsection` | Preserved for baseline-compatible form structure |
 | `RequestCandidate` | `egas_requestcandidate` | Active Phase 3A draft candidate/snapshot reference |
-| `SecondmentPositionOption` | `egas_secondmentpositionoption` | Preserved; workflow deferred |
+| `SecondmentPositionOption` | `egas_secondmentpositionoption` | Active Secondment S2/S3 position options and selection |
 | `WorkflowIteration` | `egas_workflowiteration` | Active Phase 3A iteration 1 foundation |
 | `StageTask` | `egas_stagetask` | Active Phase 3A P1/S1 and Organization-claim foundation |
 | `StageReceivedSnapshot` | `egas_stagereceivedsnapshot` | Preserved append-only table |
-| `PromotionDecision` | `egas_promotiondecision` | Preserved; workflow deferred |
+| `PromotionDecision` | `egas_promotiondecision` | Active Promotion P4 per-candidate decisions |
 | `WorkflowNote` | `egas_workflownote` | Active Phase 3A append-only notes |
 | `StageAction` | `egas_stageaction` | Active Phase 3A append-only business timeline evidence |
 | `WorkflowSignoff` | `egas_workflowsignoff` | Preserved append-only table |
 | `SecurityEvent` | `egas_securityevent` | Active Phase 2A |
 | `Notification` | `egas_notification` | Active Phase 3A recipient-owned in-app foundation |
 | `AuditEvent` | `egas_auditevent` | Active Phase 3A append-only workflow audit chain |
-| `PdfGenerationLog` | `egas_pdfgenerationlog` | Preserved; PDF generation deferred |
+| `PdfGenerationLog` | `egas_pdfgenerationlog` | Active authorized PDF generation evidence |
+| `FrozenPdfDocument` | `egas_frozenpdfdocument` | Added by migration 006 for immutable received/final PDF source and bytes |
 | CAP outbox | `cds_outbox_messages` | Preserved but no longer accessed |
 | CAP compiled-model metadata | `cds_model` | Preserved in upgraded databases but no longer accessed |
 
@@ -98,7 +99,7 @@ Migration `001_postgres_integrity.sql` remains immutable. Its partial unique ind
 | Reference projections | `GET /api/reference/*` | Authenticated | Explicit safe read-only SQL |
 | Foundation status functions | Removed as CAP-specific scaffolding | N/A | No business state or behavior to preserve |
 
-Phase 3A adds explicit REST routes under `/api/workflow` for owned draft creation/list/detail, active-snapshot candidate add/removal, routing-scoped authority options/selection, notes, timeline, Organization queue, and atomic task claim. `/api/notifications` provides own-recipient list/read behavior. There is deliberately no generic CRUD, submit, signoff, downstream transition, or full Promotion/Secondment decision route; see [phase3a-workflow-api.md](phase3a-workflow-api.md).
+The completed workflow surface extends the Phase 3A draft routes with explicit Promotion/Secondment preparation, submission/decision, return/reject/recall/restart, signoff/signature, received/final/audit PDF, scoped history, and notification actions. It deliberately exposes no generic workflow-state CRUD; every mutation is an authorized domain action. See [phase3a-workflow-api.md](phase3a-workflow-api.md).
 
 ## Verified Phase 2A operation parity
 
@@ -141,3 +142,7 @@ Each security-sensitive operation receives a `Queryable` representing either the
 CAP may be removed only when every row above has Express implementation and automated coverage, root commands no longer call CAP, the dependency inventory is absent from active backend code/package locks, and read-only verification against `egas_workflow_dev` succeeds with `egas_app`. Historical documentation/PDF mentions remain for traceability and are not runtime dependencies.
 
 Final status: **parity accepted and CAP retired**. Isolated tests passed before deletion. Live verification used `egas_app` against `egas_workflow_dev`: server start, PostgreSQL readiness, anonymous `401`s, intact `devadmin`, 22 active routing units, Admin read `200`, and exact active-role isolation `403` all passed. Uniquely named synthetic live-verification accounts and every related session/attempt/role/event were deleted and zero leftovers were confirmed. No migration or destructive schema operation was executed during live verification.
+
+## Full-stack stakeholder gap ledger
+
+- The preserved authority-delegation model permits more than one overlapping effective delegation and the final requirements do not define precedence. Workflow routing therefore accepts zero or one effective delegate and fails closed with `WORKFLOW_AUTHORITY_DELEGATION_AMBIGUOUS` when more than one exists. No date/order priority or automatic winner has been invented; stakeholder resolution is required if overlapping live delegations are intended.

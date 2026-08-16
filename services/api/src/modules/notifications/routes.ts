@@ -31,6 +31,9 @@ export function notificationRouter(pool: Pool, config: AppConfig): Router {
     const top = Math.min(100, integer(req.query.top, 50, 'top'))
     res.json(await service.list(actor.userId, integer(req.query.skip, 0, 'skip'), top, unread(req.query.unreadOnly)))
   })
+  router.get('/unread-count', async (_req, res) => {
+    res.json({ count: await service.unreadCount(authContext(res).userId) })
+  })
   router.post('/:id/read', csrf, async (req, res) => {
     exactObject(req.body ?? {}, [])
     res.json(await service.markRead(authContext(res).userId, req.params.id))

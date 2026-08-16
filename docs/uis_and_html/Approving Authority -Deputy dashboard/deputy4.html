@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+
+<html dir="rtl" lang="ar"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>إيجاس - قرار الترقية</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "error-container": "#ffdad6",
+                        "tertiary-fixed-dim": "#b7c8e1",
+                        "surface-container": "#ecefe8",
+                        "outline": "#707a70",
+                        "on-tertiary-fixed-variant": "#38485d",
+                        "surface-variant": "#e0e3dd",
+                        "tertiary": "#2a3a4f",
+                        "on-surface": "#191d19",
+                        "surface-container-low": "#f2f5ee",
+                        "on-error-container": "#93000a",
+                        "primary-container": "#135c33",
+                        "secondary-fixed": "#e0e3e5",
+                        "inverse-surface": "#2d312d",
+                        "primary-fixed-dim": "#90d6a2",
+                        "on-primary-fixed": "#00210d",
+                        "on-primary-container": "#8cd29e",
+                        "on-tertiary-container": "#b3c4dd",
+                        "on-primary": "#ffffff",
+                        "on-surface-variant": "#404941",
+                        "on-tertiary-fixed": "#0b1c30",
+                        "secondary-fixed-dim": "#c4c7c9",
+                        "on-secondary-fixed": "#191c1e",
+                        "on-primary-fixed-variant": "#02522a",
+                        "primary-fixed": "#abf3bc",
+                        "surface-tint": "#266b40",
+                        "secondary-container": "#e0e3e5",
+                        "surface-container-lowest": "#ffffff",
+                        "surface-dim": "#d8dbd5",
+                        "on-background": "#191d19",
+                        "surface": "#f7faf4",
+                        "background": "#f7faf4",
+                        "on-error": "#ffffff",
+                        "inverse-on-surface": "#eff2eb",
+                        "tertiary-fixed": "#d3e4fe",
+                        "inverse-primary": "#90d6a2",
+                        "primary": "#004321",
+                        "error": "#ba1a1a",
+                        "tertiary-container": "#415167",
+                        "on-secondary-fixed-variant": "#444749",
+                        "surface-bright": "#f7faf4",
+                        "surface-container-high": "#e6e9e3",
+                        "on-tertiary": "#ffffff",
+                        "secondary": "#5c5f61",
+                        "on-secondary-container": "#626567",
+                        "surface-container-highest": "#e0e3dd",
+                        "outline-variant": "#bfc9be",
+                        "on-secondary": "#ffffff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "margin-mobile": "16px",
+                        "gutter": "24px",
+                        "stack-md": "16px",
+                        "header-height": "72px",
+                        "stack-sm": "8px",
+                        "stack-lg": "32px",
+                        "sidebar-width": "280px",
+                        "container-max-width": "1440px"
+                    },
+                    "fontFamily": {
+                        "body-md": ["IBM Plex Sans Arabic"],
+                        "headline-md": ["IBM Plex Sans Arabic"],
+                        "display-lg-mobile": ["IBM Plex Sans Arabic"],
+                        "body-lg": ["IBM Plex Sans Arabic"],
+                        "title-sm": ["IBM Plex Sans Arabic"],
+                        "display-lg": ["IBM Plex Sans Arabic"],
+                        "label-sm": ["IBM Plex Sans Arabic"]
+                    },
+                    "fontSize": {
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "headline-md": ["24px", { "lineHeight": "32px", "fontWeight": "600" }],
+                        "display-lg-mobile": ["28px", { "lineHeight": "36px", "fontWeight": "700" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "title-sm": ["18px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "display-lg": ["36px", { "lineHeight": "44px", "fontWeight": "700" }],
+                        "label-sm": ["12px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { font-family: 'IBM Plex Sans Arabic', sans-serif; }
+    </style>
+</head>
+<body class="bg-surface text-on-surface min-h-screen flex flex-col antialiased">
+<!-- Task-Focused Header (Navigation Shell Suppressed) -->
+<header class="bg-surface-container-lowest border-b border-outline-variant h-header-height flex items-center px-gutter sticky top-0 z-50 shadow-sm">
+<div class="flex items-center justify-between w-full max-w-5xl mx-auto">
+<div class="flex items-center gap-4">
+<button class="flex items-center justify-center w-10 h-10 rounded-full hover:bg-surface-variant transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined" data-icon="arrow_forward">arrow_forward</span>
+</button>
+<div class="flex flex-col">
+<span class="font-headline-md text-headline-md text-primary">قرار الترقية</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">مراجعة واعتماد</span>
+</div>
+</div>
+<div class="hidden sm:flex items-center gap-2">
+<span class="font-title-sm text-title-sm">رقم الطلب: #PRM-2023-0891</span>
+<span class="bg-primary-container text-on-primary-container font-label-sm text-label-sm px-2 py-1 rounded">قيد المراجعة</span>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-grow p-gutter flex justify-center">
+<div class="w-full max-w-3xl flex flex-col gap-stack-lg">
+<!-- Employee Context Card (Read-Only) -->
+<section class="bg-surface-container-lowest rounded-xl border border-outline-variant p-6 shadow-sm flex flex-col gap-6">
+<h2 class="font-title-sm text-title-sm text-on-surface border-b border-outline-variant pb-3 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="person">person</span>
+                    بيانات الموظف المرشح
+                </h2>
+<div class="flex flex-col md:flex-row items-start gap-6">
+<div class="flex-shrink-0">
+<img class="w-24 h-24 rounded-full object-cover border-2 border-primary-container" data-alt="A professional corporate headshot of a middle-eastern man in his 40s wearing a modern business suit. He has a slight, confident smile and is positioned against a clean, light grey studio background. The lighting is soft and flattering, typical of high-end corporate portraiture." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCz7kObvdt9T3HR-dMut25DjNFBRJaMbPPof4fbe5gvKQ-CZ9dj0obBPokkMlK-9wpoMtGb7NLXZPAHxcz9EYNk8_rta3EJjE9SBw1N8zwqBRr1R4qAdpqhUnRZ3NBEMLXKWwcGo2KIWSEbLRCAif5rmIZ217I2ZB4pliaVaxeRqf4QelLjQwY_Z1La-3Ly8JGfN4ZRusj_RY5xLwDmDf0K3WXFFz7vLc8e2NTWJV5gMbGZsxc9Q36MxQ"/>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 w-full flex-grow">
+<div class="flex flex-col gap-1">
+<span class="font-label-sm text-label-sm text-on-surface-variant">الاسم الرباعي</span>
+<span class="font-body-md text-body-md font-medium">أحمد محمود مصطفى العبد</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-label-sm text-label-sm text-on-surface-variant">الرقم الوظيفي</span>
+<span class="font-body-md text-body-md">EMP-45902</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-label-sm text-label-sm text-on-surface-variant">المسمى الوظيفي الحالي</span>
+<span class="font-body-md text-body-md">مهندس عمليات أول</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-label-sm text-label-sm text-on-surface-variant">الإدارة / القسم</span>
+<span class="font-body-md text-body-md">إدارة العمليات - قطاع الغاز</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-label-sm text-label-sm text-on-surface-variant">الدرجة المالية الحالية</span>
+<span class="font-body-md text-body-md">الدرجة الثانية</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-label-sm text-label-sm text-on-surface-variant">تاريخ التعيين</span>
+<span class="font-body-md text-body-md">15 مارس 2014</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Decision Section -->
+<section class="bg-surface-container-lowest rounded-xl border border-outline-variant p-6 shadow-sm flex flex-col gap-6">
+<h2 class="font-title-sm text-title-sm text-on-surface border-b border-outline-variant pb-3 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="gavel">gavel</span>
+                    تحديد نوع الترقية
+                </h2>
+<div class="flex flex-col gap-4">
+<label class="flex items-center gap-3 p-4 border border-outline-variant rounded-lg cursor-pointer hover:bg-surface-container-low transition-colors bg-surface-container-lowest has-[:checked]:border-primary has-[:checked]:bg-primary-container/10">
+<input checked="" class="w-5 h-5 text-primary border-outline focus:ring-primary focus:ring-2" name="promotion_type" type="radio" value="same_role"/>
+<div class="flex flex-col">
+<span class="font-body-lg text-body-lg font-medium text-on-surface">ترقية على نفس الوظيفة</span>
+<span class="font-body-md text-body-md text-on-surface-variant">يتم ترقية الدرجة المالية مع الاحتفاظ بنفس المسمى الوظيفي والمهام.</span>
+</div>
+</label>
+<label class="flex items-center gap-3 p-4 border border-outline-variant rounded-lg cursor-pointer hover:bg-surface-container-low transition-colors bg-surface-container-lowest has-[:checked]:border-primary has-[:checked]:bg-primary-container/10">
+<input class="w-5 h-5 text-primary border-outline focus:ring-primary focus:ring-2" id="radio-new-role" name="promotion_type" type="radio" value="new_role"/>
+<div class="flex flex-col">
+<span class="font-body-lg text-body-lg font-medium text-on-surface">ترقية على وظيفة أخرى</span>
+<span class="font-body-md text-body-md text-on-surface-variant">يتم تغيير المسمى الوظيفي وتحديد مهام جديدة تتناسب مع الدرجة المستحقة.</span>
+</div>
+</label>
+<!-- Conditional Input -->
+<div class="hidden mt-2 p-4 bg-surface-container-low rounded-lg border border-outline-variant" id="new-role-input-container">
+<label class="flex flex-col gap-2">
+<span class="font-body-md text-body-md font-medium text-on-surface">الوظيفة الجديدة المقترحة</span>
+<input class="px-4 py-2 rounded border border-outline bg-surface-container-lowest text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary font-body-md h-12 w-full max-w-md" placeholder="أدخل المسمى الوظيفي الجديد..." type="text"/>
+</label>
+<p class="font-label-sm text-label-sm text-on-surface-variant mt-2 flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]" data-icon="info">info</span>
+                            يجب أن يتوافق المسمى الجديد مع الهيكل التنظيمي المعتمد.
+                        </p>
+</div>
+</div>
+</section>
+<!-- Action Bar -->
+<section class="bg-surface-container-lowest rounded-xl border border-outline-variant p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 mt-4">
+<button class="w-full sm:w-auto px-6 py-2.5 rounded border border-outline text-on-surface hover:bg-surface-variant transition-colors font-body-md font-medium focus:ring-2 focus:ring-outline flex items-center justify-center gap-2">
+<span class="material-symbols-outlined" data-icon="undo">undo</span>
+                    إرجاع للمراجعة
+                </button>
+<div class="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+<button class="w-full sm:w-auto px-6 py-2.5 rounded bg-error text-on-error hover:bg-error/90 transition-colors font-body-md font-medium focus:ring-2 focus:ring-error flex items-center justify-center gap-2">
+<span class="material-symbols-outlined" data-icon="close">close</span>
+                        رفض
+                    </button>
+<button class="w-full sm:w-auto px-8 py-2.5 rounded bg-primary text-on-primary hover:bg-primary/90 transition-colors font-body-md font-medium focus:ring-2 focus:ring-primary focus:ring-offset-1 flex items-center justify-center gap-2">
+<span class="material-symbols-outlined" data-icon="check_circle">check_circle</span>
+                        اعتماد الترقية
+                    </button>
+</div>
+</section>
+</div>
+</main>
+<script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const radios = document.querySelectorAll('input[name="promotion_type"]');
+            const newRoleContainer = document.getElementById('new-role-input-container');
+            const newRoleInput = newRoleContainer.querySelector('input');
+
+            radios.forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    if (e.target.value === 'new_role') {
+                        newRoleContainer.classList.remove('hidden');
+                        newRoleInput.focus();
+                    } else {
+                        newRoleContainer.classList.add('hidden');
+                        newRoleInput.value = ''; // clear when hidden
+                    }
+                });
+            });
+        });
+    </script>
+</body></html>

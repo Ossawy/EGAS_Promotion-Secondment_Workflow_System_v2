@@ -254,13 +254,27 @@ describe('Phase 3A request aggregate', () => {
     expect(stored.rows[0].claimedrolesnapshot).toBe('ORGANIZATION')
   })
 
+  it('lists only actionable tasks assigned to the active Approving Authority account', async () => {
+    const request = await create(); const task = await pool.query<{ id: string }>('SELECT id FROM egas_stagetask WHERE request_id=$1', [request.id])
+    await pool.query("UPDATE egas_workflowrequest SET currentstage='P4' WHERE id=$1", [request.id])
+    await pool.query("UPDATE egas_stagetask SET stagecode='P4',assigneduser_id=$2,taskstatus='OPEN' WHERE id=$1", [task.rows[0]!.id, authority.userId])
+    expect(await taskService.authorityQueue(authority, 0, 50)).toEqual([
+      expect.objectContaining({ taskId: task.rows[0]!.id, requestId: request.id, stageCode: 'P4', actionable: true })
+    ])
+    const otherAuthority = await user('phase3-other-authority', 'APPROVING_AUTHORITY')
+    expect(await taskService.authorityQueue(otherAuthority, 0, 50)).toHaveLength(0)
+    await expect(taskService.authorityQueue(org, 0, 50)).rejects.toMatchObject({ status: 403, code: 'ACTIVE_ROLE_REQUIRED' })
+  })
+
   it('isolates notifications by recipient and marks only the owner notification read', async () => {
     const own = await createNotification(pool, { recipientUserId: ea.userId, type: 'TEST', titleAr: 'اختبار' })
     const foreign = await createNotification(pool, { recipientUserId: otherEa.userId, type: 'TEST', titleAr: 'آخر' })
     const notifications = new NotificationService(pool)
     expect(await notifications.list(ea.userId, 0, 50, true)).toEqual([expect.objectContaining({ id: own, isRead: false })])
+    expect(await notifications.unreadCount(ea.userId)).toBe(1)
     await expect(notifications.markRead(ea.userId, foreign)).rejects.toMatchObject({ status: 404 })
     expect(await notifications.markRead(ea.userId, own)).toMatchObject({ id: own, isRead: true })
+    expect(await notifications.unreadCount(ea.userId)).toBe(0)
     expect(await notifications.list(ea.userId, 0, 50, true)).toHaveLength(0)
   })
 })
