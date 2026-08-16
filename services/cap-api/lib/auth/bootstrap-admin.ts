@@ -1,6 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import cds from '@sap/cds'
+import type { Service } from '@sap/cds'
 import { LocalAuthenticationProvider } from './local-authentication-provider.js'
+import {
+  type DisconnectableDatabase,
+  withStandaloneDatabase
+} from '../runtime/standalone-database-lifecycle.js'
+
+type BootstrapInput = {
+  username: string
+  displayName: string
+  temporaryPassword: string
+  staffIdentifier: string | null
+  jobTitle: string | null
+}
+
+type BootstrapDatabase = Service & DisconnectableDatabase
 
 function required(name: string): string {
   const value = process.env[name]?.trim()
@@ -16,7 +31,7 @@ function optional(name: string): string | null {
   return value
 }
 
-async function bootstrap(): Promise<void> {
+function readBootstrapInput(): BootstrapInput {
   const username = required('EGAS_BOOTSTRAP_ADMIN_USERNAME')
   const displayName = required('EGAS_BOOTSTRAP_ADMIN_DISPLAY_NAME')
   const temporaryPassword = required('EGAS_BOOTSTRAP_ADMIN_TEMP_PASSWORD')
@@ -31,10 +46,11 @@ async function bootstrap(): Promise<void> {
     throw new Error('Temporary password must be between 14 and 256 characters')
   }
 
-  const db = await cds.connect.to('db')
-  if (cds.env.requires?.db?.kind !== 'postgres') {
-    throw new Error('Admin bootstrap requires the configured PostgreSQL database')
-  }
+  return { username, displayName, temporaryPassword, staffIdentifier, jobTitle }
+}
+
+async function bootstrap(db: Service, input: BootstrapInput): Promise<void> {
+  const { username, displayName, temporaryPassword, staffIdentifier, jobTitle } = input
   const auth = new LocalAuthenticationProvider(db)
   const passwordHash = await auth.hashPassword(temporaryPassword)
 
@@ -85,14 +101,19 @@ async function bootstrap(): Promise<void> {
   console.info(`Bootstrap Admin created for username ${username}. Password change is mandatory.`)
 }
 
-const shutdown = (): Promise<unknown> | unknown => (
-  cds as typeof cds & { shutdown: () => Promise<unknown> | unknown }
-).shutdown()
+async function main(): Promise<void> {
+  const input = readBootstrapInput()
+  if (cds.env.requires?.db?.kind !== 'postgres') {
+    throw new Error('Admin bootstrap requires the configured PostgreSQL database')
+  }
+  await withStandaloneDatabase(
+    async () => await cds.connect.to('db') as unknown as BootstrapDatabase,
+    async db => await bootstrap(db, input)
+  )
+}
 
-bootstrap()
-  .then(() => shutdown())
-  .catch(async error => {
+main()
+  .catch(error => {
     console.error(error instanceof Error ? error.message : 'Admin bootstrap failed')
-    await shutdown()
     process.exitCode = 1
   })

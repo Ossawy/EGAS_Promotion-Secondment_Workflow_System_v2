@@ -2,7 +2,8 @@ import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import cds from '@sap/cds'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { findActivePrivilegedAdminAccounts } from '../scripts/pilot-check-queries.js'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const test = cds.test(projectRoot)
@@ -10,6 +11,22 @@ const basicAuth = {
   username: 'foundation-ea',
   password: 'synthetic-only'
 }
+
+beforeAll(async () => {
+  const db = await cds.connect.to('db')
+  if (db.kind !== 'sqlite') {
+    throw new Error(`Tests require isolated SQLite; effective database kind is ${String(db.kind)}`)
+  }
+  const model = await cds.load('*')
+  const deploy = (
+    cds as typeof cds & {
+      deploy: (modelToDeploy: typeof model) => {
+        to: (target: typeof db) => Promise<unknown>
+      }
+    }
+  ).deploy
+  await deploy(model).to(db)
+})
 
 describe('CAP backend foundation', () => {
   it('starts the CAP application and answers liveness/readiness', async () => {
@@ -109,6 +126,52 @@ describe('CAP backend foundation', () => {
       'STANDARD_EXCELLENT',
       'STANDARD_SKILLED'
     ])
+  })
+
+  it('counts only active accounts with an active ADMIN Manage-Admins role', async () => {
+    const db = await cds.connect.to('db')
+    expect(db.kind).toBe('sqlite')
+    const accountIds = {
+      privileged: '10000000-0000-4000-8000-000000000001',
+      disabledAccount: '10000000-0000-4000-8000-000000000002',
+      inactiveRole: '10000000-0000-4000-8000-000000000003',
+      nonAdminRole: '10000000-0000-4000-8000-000000000004',
+      cannotManageAdmins: '10000000-0000-4000-8000-000000000005'
+    }
+    const roleIds = Object.fromEntries(
+      Object.entries(accountIds).map(([name, ID], index) => [
+        name,
+        `20000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
+      ])
+    ) as Record<keyof typeof accountIds, string>
+
+    try {
+      await db.run(INSERT.into('egas.UserAccount').entries(
+        Object.entries(accountIds).map(([name, ID]) => ({
+          ID,
+          username: `pilot-check-${name}`,
+          displayName: `Synthetic ${name}`,
+          passwordHash: 'synthetic-test-value',
+          isActive: name !== 'disabledAccount'
+        }))
+      ))
+      await db.run(INSERT.into('egas.UserAccountRole').entries(
+        Object.entries(accountIds).map(([name, user_ID]) => ({
+          ID: roleIds[name as keyof typeof accountIds],
+          user_ID,
+          role: name === 'nonAdminRole' ? 'ORGANIZATION' : 'ADMIN',
+          canManageAdmins: name !== 'cannotManageAdmins',
+          isActive: name !== 'inactiveRole'
+        }))
+      ))
+
+      const accounts = await findActivePrivilegedAdminAccounts(db)
+
+      expect(accounts).toEqual([{ ID: accountIds.privileged }])
+    } finally {
+      await db.run(DELETE.from('egas.UserAccountRole').where({ ID: Object.values(roleIds) }))
+      await db.run(DELETE.from('egas.UserAccount').where({ ID: Object.values(accountIds) }))
+    }
   })
 
   it('does not expose WorkflowRequest status through generic CRUD', async () => {

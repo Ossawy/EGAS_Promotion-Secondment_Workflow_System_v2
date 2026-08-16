@@ -35,7 +35,23 @@ The application browser must never receive either database credential.
    npm run setup
    ```
 
-2. Create a new, empty development database and the separate migration/runtime roles. Do not use the `postgres` superuser as the application's ongoing runtime identity.
+2. On a fresh installation, connect as a controlled PostgreSQL administrator and create separate login roles and an empty database. The names below are examples; keep the three names consistent in later commands. Use `\password` or an approved secret manager so passwords do not enter shell history:
+
+   ```sql
+   CREATE ROLE egas_migrator LOGIN
+     NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+   \password egas_migrator
+
+   CREATE ROLE egas_app LOGIN
+     NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+   \password egas_app
+
+   CREATE DATABASE egas_workflow_dev OWNER egas_migrator;
+   \connect egas_workflow_dev
+   ALTER SCHEMA public OWNER TO egas_migrator;
+   ```
+
+   `egas_migrator` is the database/public-schema owner used only for controlled deployment. `egas_app` must not own the database or schema, inherit the owner role, or receive `CREATE`, superuser, `CREATEDB`, `CREATEROLE`, replication, or `BYPASSRLS` privileges.
 
 3. Copy the example into the CAP project and edit only the untracked copy:
 
@@ -43,21 +59,49 @@ The application browser must never receive either database credential.
    Copy-Item .env.example services/cap-api/.env
    ```
 
-4. For the initial schema deployment, temporarily supply the migration-owner credentials through the process environment or a private CAP binding. Run:
+4. Configure the untracked/private CAP binding with the database name and `egas_migrator` credentials. Run the CAP-owned schema deployment and repository migrations:
 
    ```powershell
    npm run db:migrate
    ```
 
-   This first invokes CAP schema evolution/reference seeding and then applies the versioned PostgreSQL-only migrations. Afterward, configure `.env` with the restricted runtime role. Use `services/cap-api/db/operations/least-privilege-role.sql.example` as the grant/revoke checklist.
+   This invokes CAP schema evolution/reference seeding before applying the versioned PostgreSQL-only migrations. Do not run the frozen logical-baseline SQL.
 
-5. Start the API:
+5. Still using the migration owner, apply the idempotent runtime grants after every controlled migration. The script verifies the three ownership/role boundaries before changing privileges:
+
+   ```powershell
+   psql --dbname egas_workflow_dev --username egas_migrator `
+     --set=database_name=egas_workflow_dev `
+     --set=schema_owner=egas_migrator `
+     --set=runtime_role=egas_app `
+     --file services/cap-api/db/operations/least-privilege-role.sql.example
+   ```
+
+   This covers all current CAP tables, `cds_outbox_messages`, required sequence access, and owner-scoped default privileges for future tables/sequences. It then removes UPDATE/DELETE from append-only entities and write access from `egas_SchemaMigration`. The runtime role receives no database/schema `CREATE` privilege.
+
+6. Switch the private CAP binding from migration-owner credentials to the restricted `egas_app` credentials. Set the machine-local `EGAS_BOOTSTRAP_ADMIN_*` values and, on a fresh database only, run:
+
+   ```powershell
+   npm run admin:bootstrap
+   ```
+
+   The bootstrap transaction creates the first privileged Admin, closes the CAP database pool, and exits normally. If a privileged Admin already exists, the command refuses safely; do not alter or delete that Admin merely to rerun bootstrap.
+
+7. Run the preflight:
+
+   ```powershell
+   npm run pilot:check
+   ```
+
+   During the Phase 1/Phase 2 boundary, this command is expected to exit non-zero until all 22 active routing units have active primary-authority coverage and an annual employee snapshot has been activated. Do not invent authority mappings or activate synthetic employee data to make the preflight green.
+
+8. Start the API:
 
    ```powershell
    npm run dev
    ```
 
-6. Run the quality gates:
+9. Run the quality gates:
 
    ```powershell
    npm run build
@@ -90,7 +134,7 @@ If a clean development database was initialized from the handwritten SQL, back i
 
 ## Admin bootstrap
 
-Set the `EGAS_BOOTSTRAP_ADMIN_*` variables only in machine-local configuration, use a temporary password of at least 14 characters, then run `npm run admin:bootstrap`. The command takes a PostgreSQL advisory transaction lock, refuses to run when a Manage-Admins assignment already exists, stores only an Argon2id hash, and sets `mustChangePassword=true`. It never prints the password.
+Set the `EGAS_BOOTSTRAP_ADMIN_*` variables only in machine-local configuration, use a temporary password of at least 14 characters, then run `npm run admin:bootstrap` once on a fresh database. The command takes a PostgreSQL advisory transaction lock, refuses to run when a Manage-Admins assignment already exists, stores only an Argon2id hash, and sets `mustChangePassword=true`. It never prints the password. Whether the transaction succeeds or fails, the standalone command explicitly drains and closes its CAP database pool before exiting.
 
 ## Annual import status
 
@@ -103,6 +147,8 @@ The ownership chain is:
 `Final logical baseline SQL -> CAP CDS implementation -> versioned PostgreSQL migrations`
 
 The baseline SQL is retained for traceability and parity review. Developers do not independently edit and deploy it as a second runtime schema.
+
+Use the schema/migration owner only for `db:migrate` and the post-migration grant script. Run the service, bootstrap command, and pilot check with the restricted runtime role. Owner-scoped default privileges cover future CAP-created tables and sequences; every future append-only migration must revoke UPDATE/DELETE in the same release and extend the explicit restriction list in the grant script.
 
 ## Security and repository policy
 

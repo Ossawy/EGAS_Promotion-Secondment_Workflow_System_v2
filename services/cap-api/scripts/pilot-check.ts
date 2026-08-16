@@ -1,4 +1,5 @@
 import cds from '@sap/cds'
+import { findActivePrivilegedAdminAccounts } from './pilot-check-queries.js'
 
 interface CheckResult {
   check: string
@@ -16,7 +17,10 @@ async function main(): Promise<void> {
     detail: dbUser ? `configured as ${dbUser}` : 'database user is missing'
   })
 
-  const db = await cds.connect.to('db')
+  // Standalone scripts do not receive the server's already-linked model. Bind
+  // it explicitly so association-path CQN is resolved by CAP for every adapter.
+  const model = await cds.load('*')
+  const db = await cds.connect.to('db', { model })
   const routingUnits = await db.run(
     SELECT.from('egas.RoutingUnit').columns('ID').where({ isActive: true })
   ) as Array<{ ID: string }>
@@ -26,22 +30,11 @@ async function main(): Promise<void> {
     detail: `${routingUnits.length}/22 active`
   })
 
-  const privilegedRoles = await db.run(
-    SELECT.from('egas.UserAccountRole')
-      .columns('user_ID')
-      .where({ role: 'ADMIN', canManageAdmins: true, isActive: true })
-  ) as Array<{ user_ID: string }>
-  let activePrivilegedAdmins = 0
-  for (const role of privilegedRoles) {
-    const account = await db.run(
-      SELECT.one.from('egas.UserAccount').columns('ID').where({ ID: role.user_ID, isActive: true })
-    )
-    if (account) activePrivilegedAdmins += 1
-  }
+  const activePrivilegedAdmins = await findActivePrivilegedAdminAccounts(db)
   results.push({
     check: 'privileged Admin',
-    ok: activePrivilegedAdmins >= 1,
-    detail: `${activePrivilegedAdmins} active Manage-Admins account(s)`
+    ok: activePrivilegedAdmins.length >= 1,
+    detail: `${activePrivilegedAdmins.length} active Manage-Admins account(s)`
   })
 
   const assignments = await db.run(
