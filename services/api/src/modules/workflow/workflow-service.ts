@@ -62,14 +62,44 @@ function ownDraft(row: RequestRow, actor: AuthContext): void {
 export class WorkflowService {
   constructor(private readonly pool: Pool) {}
 
-  private async requireAccess(repo: WorkflowRepository, row: RequestRow, actor: AuthContext): Promise<boolean> {
-    if (actor.activeRole === 'EMPLOYEE_AFFAIRS' && row.createdById === actor.userId) return false
-    const task = await repo.currentTask(row)
-    if (actor.activeRole === responsibleRole(row.currentStage) && task?.assignedUserId === actor.userId) return true
-    if ((actor.activeRole === 'ORGANIZATION' || actor.activeRole === 'APPROVING_AUTHORITY')
-      && await repo.hasParticipated(row.id, actor.userId)) return false
-    throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
+  private async requireAccess(
+  repo: WorkflowRepository,
+  row: RequestRow,
+  actor: AuthContext
+): Promise<boolean> {
+  const task = await repo.currentTask(row)
+
+  if (
+    actor.activeRole === responsibleRole(row.currentStage) &&
+    task?.assignedUserId === actor.userId &&
+    ['OPEN', 'CLAIMED'].includes(task.taskStatus)
+  ) {
+    return true
   }
+
+  if (
+    actor.activeRole === 'EMPLOYEE_AFFAIRS' &&
+    row.createdById === actor.userId
+  ) {
+    return false
+  }
+
+  if (
+    (actor.activeRole === 'ORGANIZATION' ||
+      actor.activeRole === 'APPROVING_AUTHORITY') &&
+    await repo.hasParticipated(row.id, actor.userId)
+  ) {
+    return false
+  }
+
+  throw new AppError(
+    404,
+    'Workflow request not found',
+    'WORKFLOW_REQUEST_NOT_FOUND'
+  )
+}
+
+  
 
   private async detailFrom(repo: WorkflowRepository, requestId: string, actor: AuthContext): Promise<Record<string, unknown>> {
     const row = await repo.request(requestId)

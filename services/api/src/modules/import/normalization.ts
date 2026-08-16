@@ -101,17 +101,51 @@ export function normalizeQualificationDate(value: WorkbookCell | undefined): Nor
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
     return { kind: 'EMPTY', value: null }
   }
+
   if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? { kind: 'INVALID' } : validDate(value.toISOString().slice(0, 10))
+    return Number.isNaN(value.getTime())
+      ? { kind: 'INVALID' }
+      : validDate(value.toISOString().slice(0, 10))
   }
-  if (typeof value === 'number') return parsedDate(excelSerialDate(value))
+
+  if (typeof value === 'number') {
+    return parsedDate(excelSerialDate(value))
+  }
+
   const normalized = String(value).trim()
+
+  // Dates stored in rawjson are serialized using Date.toISOString().
+  // Revalidation must accept that same ISO UTC representation.
+  const isoDateTime =
+    /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.exec(normalized)
+
+  if (isoDateTime) {
+    return parsedDate(
+      calendarDate(
+        Number(isoDateTime[1]),
+        Number(isoDateTime[2]),
+        Number(isoDateTime[3])
+      )
+    )
+  }
+
   if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
     const [year, month, day] = normalized.split('-').map(Number) as [number, number, number]
     return parsedDate(calendarDate(year, month, day))
   }
+
   const dayFirst = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(normalized)
-  if (dayFirst) return parsedDate(calendarDate(Number(dayFirst[3]), Number(dayFirst[2]), Number(dayFirst[1])))
+
+  if (dayFirst) {
+    return parsedDate(
+      calendarDate(
+        Number(dayFirst[3]),
+        Number(dayFirst[2]),
+        Number(dayFirst[1])
+      )
+    )
+  }
+
   return { kind: 'INVALID' }
 }
 
