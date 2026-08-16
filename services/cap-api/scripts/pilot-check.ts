@@ -1,5 +1,5 @@
 import cds from '@sap/cds'
-import { findActivePrivilegedAdminAccounts } from './pilot-check-queries.js'
+import { findActivePrivilegedAdminAccounts } from './pilot-check-queries.ts'
 
 interface CheckResult {
   check: string

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import cds from '@sap/cds'
 import type { Service } from '@sap/cds'
-import { LocalAuthenticationProvider } from './local-authentication-provider.js'
+import { LocalAuthenticationProvider } from './local-authentication-provider.ts'
 import {
   type DisconnectableDatabase,
   withStandaloneDatabase
-} from '../runtime/standalone-database-lifecycle.js'
+} from '../runtime/standalone-database-lifecycle.ts'
 
 type BootstrapInput = {
   username: string

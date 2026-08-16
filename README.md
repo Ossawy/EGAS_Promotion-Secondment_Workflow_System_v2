@@ -1,6 +1,6 @@
 # EGAS Promotion & Secondment Workflow System
 
-Phase 1 provides the backend/database foundation for the EGAS Promotion & Secondment Workflow System. The repository currently contains a SAP CAP Node.js/TypeScript modular monolith under `services/cap-api`; frontend applications and full P1-P5/S1-S5 workflow transitions are intentionally outside this phase.
+Phase 2A provides the backend/database foundation plus local authentication, server-side sessions, and controlled Admin APIs for the EGAS Promotion & Secondment Workflow System. The repository contains a SAP CAP Node.js/TypeScript modular monolith under `services/cap-api`; frontend applications, annual import, and P1-P5/S1-S5 workflow transitions remain outside this phase.
 
 ## Implemented foundation
 
@@ -8,7 +8,9 @@ Phase 1 provides the backend/database foundation for the EGAS Promotion & Second
 - Domain-separated CDS for reference/routing, accounts/sessions, annual HR snapshots/import staging, authority assignments/delegations, immutable signatures, workflow records, notifications, notes, audit, and PDF metadata.
 - The final 22 routing units, five job categories, and two qualification-status values as repository-owned reference seeds.
 - Replaceable `AuthenticationProvider` and `EmployeeDataProvider` interfaces with local PostgreSQL implementations.
+- Explicit login, current-user, password-change, role-switch, and logout actions using opaque server-side sessions; only token/CSRF hashes are persisted.
 - Active-role authentication middleware that authorizes a session under exactly one selected role rather than unioning all account roles.
+- Controlled Admin actions for accounts, role assignments, locks, password resets, approving-authority assignments, and delegations; sensitive persistence entities are not exposed as generic CRUD.
 - A controlled first-Admin bootstrap command using Argon2id and environment-supplied values; there is no public Admin registration endpoint.
 - A validation-only annual `.xlsx` command skeleton with file/container/size limits, exact header-name validation, duplicate-header rejection, row bounds, and no direct active-snapshot writes.
 - Read-only reference endpoints and explicit Auth/Admin/Employee Data/Workflow/Audit/Document/Health service boundaries. Workflow and audit persistence are not exposed as generic CRUD.
@@ -58,6 +60,8 @@ The application browser must never receive either database credential.
    ```powershell
    Copy-Item .env.example services/cap-api/.env
    ```
+
+   Generate a unique `EGAS_AUTH_FINGERPRINT_SECRET` of at least 32 characters. Production also requires HTTPS and `EGAS_REQUIRE_SECURE_COOKIE=true`; startup fails closed if these requirements are missing.
 
 4. Configure the untracked/private CAP binding with the database name and `egas_migrator` credentials. Run the CAP-owned schema deployment and repository migrations:
 
@@ -109,6 +113,20 @@ The application browser must never receive either database credential.
    npm run security:check
    ```
 
+## Authentication and sessions
+
+`AuthService` is mounted at `/auth` and provides `login`, `me`, `changePassword`, `selectActiveRole`, and `logout`. Login verifies Argon2id credentials and applies database-backed identifier/IP failure limits. It returns safe account context while placing an opaque session token only in the `HttpOnly`, `SameSite=Strict` session cookie. PostgreSQL stores SHA-256 hashes, never raw session or CSRF tokens. Sessions enforce the configured idle and absolute expiry and are revoked or rotated after password, role, account, and authority-security changes.
+
+Users with more than one active assignment must explicitly select one active role. Authorization uses only that role. A temporary-password account can call only `me`, `changePassword`, and `logout` until the password is changed. Development and production use the local session middleware; mocked users exist only in the isolated `test` profile. Production refuses insecure-cookie configuration or a missing/short fingerprint secret.
+
+Cookie-authenticated mutations require an exact trusted Origin when supplied and the double-submit `X-CSRF-Token` value backed by the current session's stored CSRF hash. The readable CSRF cookie is issued on login and each session rotation. A future React application should be served from the same origin (or use a same-origin development proxy), send credentials, read the CSRF cookie, and copy it to `X-CSRF-Token`. CORS is deliberately disabled.
+
+The complete request/response and Admin action contract is in [docs/phase2a-api.md](docs/phase2a-api.md).
+
+## Admin APIs
+
+All `/admin` operations require an authenticated session whose selected role is exactly `ADMIN`; merely owning an unselected Admin role grants nothing. Admin-account changes involving Admin targets require `canManageAdmins=true`, prohibit dangerous self-management, and preserve at least one active Manage-Admins account. Bootstrap is only for the first privileged account. Normal accounts, multiple explicit role assignments, authority mappings, and temporary delegations are managed through named Admin actions and audited transactionally.
+
 ## Existing database warning
 
 The frozen logical SQL uses tables such as `egas.routing_unit`; CAP persistence uses repository-owned CDS artifacts with CAP physical names such as `public.egas_routingunit`. `npm run db:migrate` checks for the handwritten baseline and stops before deployment if it finds that schema without the CAP schema. It never drops or recreates a database.
@@ -122,7 +140,7 @@ If a clean development database was initialized from the handwritten SQL, back i
 | `npm run dev` | Start CAP in watch mode against configured PostgreSQL. |
 | `npm run pilot` | Phase 1 backend-only pilot alias; frontend is not part of this task. |
 | `npm run build` | Clean generated output, compile CDS, generate types, typecheck, and produce production CAP/PostgreSQL build artifacts. |
-| `npm test` | Run the SQLite-isolated foundation tests with synthetic identities only. |
+| `npm test` | Run SQLite-isolated foundation and Phase 2A tests with synthetic identities only. |
 | `npm run db:migrate` | Apply CAP schema evolution/seeds plus versioned PostgreSQL invariants. |
 | `npm run db:deploy` | Raw CAP deploy only; normal setup should use `db:migrate`. |
 | `npm run admin:bootstrap` | Create the first Manage-Admins account from environment values. |
@@ -154,4 +172,4 @@ Use the schema/migration owner only for `db:migrate` and the post-migration gran
 
 `.env`, private CAP bindings, real HR spreadsheets, signature storage, generated employee PDFs, database backups, local databases, and build artifacts are ignored. Reference seeds contain no accounts, staff IDs, HR rows, passwords, or signatures. Any committed real secret must be rotated/revoked first, then removed from Git history and rescanned.
 
-Production authentication is intentionally fail-closed behind the local session middleware. Phase 1 implements password/session primitives and session resolution, but does not expose login/logout/password-change HTTP endpoints yet; those endpoints require the complete rate-limit, CSRF, rotation, revocation, and safe-error flow in the next authentication phase.
+Production authentication is fail-closed behind the local session middleware. It never falls back to mocked users. Never log passwords, raw session tokens, CSRF values, or private database credentials.

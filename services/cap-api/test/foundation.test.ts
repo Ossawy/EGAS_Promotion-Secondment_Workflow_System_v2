@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import cds from '@sap/cds'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { findActivePrivilegedAdminAccounts } from '../scripts/pilot-check-queries.js'
+import { findActivePrivilegedAdminAccounts } from '../scripts/pilot-check-queries.ts'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const test = cds.test(projectRoot)

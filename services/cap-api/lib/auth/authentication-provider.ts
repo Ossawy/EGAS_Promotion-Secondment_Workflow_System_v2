@@ -7,7 +7,9 @@ export type ActiveRole =
 export interface AuthenticatedPrincipal {
   userId: string
   sessionId: string
-  activeRole: ActiveRole
+  activeRole: ActiveRole | null
+  mustChangePassword: boolean
+  canManageAdmins: boolean
 }
 
 export interface AuthenticationProvider {

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   applyTrackedPostgresMigration,
   executePostgresScript
-} from '../scripts/postgres-script-executor.js'
+} from '../scripts/postgres-script-executor.ts'
 
 const multiStatementScript = `
 CREATE TABLE migration_probe (value text);

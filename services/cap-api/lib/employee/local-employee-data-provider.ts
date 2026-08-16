@@ -2,7 +2,7 @@ import cds, { type Service } from '@sap/cds'
 import type {
   EmployeeDataProvider,
   EmployeeSnapshotRecord
-} from './employee-data-provider.js'
+} from './employee-data-provider.ts'
 
 type ImportBatchRow = {
   ID: string
@@ -26,7 +26,11 @@ type SnapshotRow = {
 }
 
 export class LocalEmployeeDataProvider implements EmployeeDataProvider {
-  constructor(private readonly injectedDb?: Service) {}
+  private readonly injectedDb: Service | undefined
+
+  constructor(injectedDb?: Service) {
+    this.injectedDb = injectedDb
+  }
 
   async getActiveSnapshotYear(): Promise<number | null> {
     const batch = await this.activeBatch()

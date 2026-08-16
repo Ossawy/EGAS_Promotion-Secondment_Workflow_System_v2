@@ -5,7 +5,7 @@ import {
   requiredHeadersForYear,
   validateHeaders,
   type HeaderValidationResult
-} from './header-validation.js'
+} from './header-validation.ts'
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024
 const MAX_ROWS = 25_000

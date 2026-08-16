@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
-import { withStandaloneDatabase } from '../lib/runtime/standalone-database-lifecycle.js'
+import { withStandaloneDatabase } from '../lib/runtime/standalone-database-lifecycle.ts'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 

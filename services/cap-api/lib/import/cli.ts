@@ -1,4 +1,4 @@
-import { inspectAnnualWorkbook } from './workbook-inspector.js'
+import { inspectAnnualWorkbook } from './workbook-inspector.ts'
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name)

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Service } from '@sap/cds'
-import { LocalAuthenticationProvider } from '../lib/auth/local-authentication-provider.js'
-import { LocalEmployeeDataProvider } from '../lib/employee/local-employee-data-provider.js'
+import { LocalAuthenticationProvider } from '../lib/auth/local-authentication-provider.ts'
+import { LocalEmployeeDataProvider } from '../lib/employee/local-employee-data-provider.ts'
 import {
   normalizeNullableSentinel,
   validateHeaders
-} from '../lib/import/header-validation.js'
+} from '../lib/import/header-validation.ts'
 
 describe('replaceable local providers', () => {
   it('uses Argon2id and never returns a plaintext password hash', async () => {
@@ -25,19 +25,22 @@ describe('replaceable local providers', () => {
         ID: 'session-1',
         user_ID: 'user-1',
         activeRole: 'ORGANIZATION',
+        lastSeenAt: new Date().toISOString(),
         idleExpiresAt: new Date(Date.now() + 60_000).toISOString(),
         absoluteExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         revokedAt: null
       })
-      .mockResolvedValueOnce({ ID: 'user-1', isActive: true })
-      .mockResolvedValueOnce({ ID: 'role-organization' })
+      .mockResolvedValueOnce({ ID: 'user-1', isActive: true, mustChangePassword: false })
+      .mockResolvedValueOnce({ ID: 'role-organization', canManageAdmins: false })
     const provider = new LocalAuthenticationProvider({ run } as unknown as Service)
 
     const principal = await provider.resolveSessionToken('x'.repeat(43))
     expect(principal).toEqual({
       userId: 'user-1',
       sessionId: 'session-1',
-      activeRole: 'ORGANIZATION'
+      activeRole: 'ORGANIZATION',
+      mustChangePassword: false,
+      canManageAdmins: false
     })
     expect(run).toHaveBeenCalledTimes(3)
   })

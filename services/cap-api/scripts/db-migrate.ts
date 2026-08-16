@@ -7,7 +7,7 @@ import {
   applyTrackedPostgresMigration,
   type AppliedMigration,
   type PostgresSimpleQueryExecutor
-} from './postgres-script-executor.js'
+} from './postgres-script-executor.ts'
 
 async function main(): Promise<void> {
   const kind = cds.env.requires?.db?.kind

@@ -11,8 +11,8 @@
     "setup": "node scripts/setup-check.mjs",
     "dev": "cds watch",
     "pilot": "cds watch",
-    "start": "cds-serve",
-    "build": "npm run clean && npm run model:check && npm run types:generate && npm run typecheck && cds build --production",
+    "start": "cds serve",
+    "build": "npm run clean && npm run model:check && npm run types:generate && npm run typecheck && cds build --production && node scripts/finalize-build.mjs",
     "clean": "node scripts/clean-generated.mjs",
     "typecheck": "tsc --noEmit",
     "types:generate": "cds-typer \"*\" --outputDirectory @cds-models",
@@ -42,10 +42,11 @@
       },
       "auth": {
         "[development]": {
-          "kind": "mocked"
+          "impl": "srv/auth/local-auth-middleware.ts"
         },
         "[test]": {
           "kind": "mocked",
+          "impl": null,
           "users": {
             "foundation-admin": {
               "password": "synthetic-only",
@@ -62,7 +63,7 @@
           }
         },
         "[production]": {
-          "impl": "srv/auth/local-auth-middleware.js"
+          "impl": "srv/auth/local-auth-middleware.ts"
         }
       }
     },
