@@ -1,21 +1,26 @@
 # Phase 2A backend pilot setup
 
-This runbook starts the Phase 2A CAP backend. Annual import, workflow execution, and React applications are not yet implemented.
+This runbook starts the plain Express/PostgreSQL backend. Annual activation, workflow execution, and React applications are not implemented.
 
-1. Install Node.js 22+ and PostgreSQL on the pilot machine.
-2. Clone the private repository and run `npm install` followed by `npm run setup`.
-3. As a controlled DBA, create an empty database, a non-superuser migration/schema-owner login, and a separate non-superuser runtime login. Make the migration role the database and `public` schema owner. Do not grant the runtime role owner membership, `CREATE`, `CREATEDB`, `CREATEROLE`, replication, or `BYPASSRLS`.
-4. Copy `.env.example` to `services/cap-api/.env`; put only machine-local values in the copy. Initially configure the database credentials for the migration/schema owner. Generate a unique `EGAS_AUTH_FINGERPRINT_SECRET` of at least 32 characters. Production requires HTTPS and `EGAS_REQUIRE_SECURE_COOKIE=true`.
-5. Run `npm run db:migrate`. This is the only supported schema deployment path; do not import the frozen logical-baseline SQL.
-6. Run `services/cap-api/db/operations/least-privilege-role.sql.example` through `psql` with `database_name`, `schema_owner`, and `runtime_role` variables. This grants current CAP/outbox objects and configures owner-scoped defaults for future tables/sequences while retaining append-only restrictions.
-7. Change the private database credentials to the restricted runtime role.
-8. On a fresh database only, set temporary bootstrap environment values and run `npm run admin:bootstrap` once. The command must print success, disconnect, and return to the shell. If an Admin already exists, keep it; bootstrap will refuse safely.
-9. Run `npm run pilot:check` using the runtime role.
-10. Start CAP with the restricted runtime binding. The local session middleware must load; production must never report or fall back to mocked authentication. Use a same-origin frontend/reverse proxy because credentialed CORS is disabled.
-11. Do not load a real employee workbook in Phase 2A. The current import command performs validation only.
-12. Run `npm run build`, `npm test`, `npm run typecheck`, and `npm run security:check`.
-13. Run `npm run pilot` and access the CAP service on the locally reported port.
+1. Install Node.js 22+ and PostgreSQL; clone the private repository; run `npm install` and `npm run setup`.
+2. As a controlled DBA, create an empty database, a non-superuser schema/migration-owner login, and a separate restricted runtime login. The runtime must not own the database/schema/tables, inherit the owner, or receive `CREATE`, `TEMPORARY`, `CREATEDB`, `CREATEROLE`, replication, `BYPASSRLS`, or superuser privileges.
+3. Copy `.env.example` to `services/api/.env`. Initially configure `EGAS_DB_*` for the schema/migration owner. Generate a unique fingerprint secret. Production requires HTTPS and secure cookies.
+4. Run `npm run db:migrate`. Do not import the frozen logical SQL and do not recreate an existing database.
+5. Run `services/api/db/operations/least-privilege-role.sql.example` through `psql`, supplying `database_name`, the actual CAP-object/schema owner, and `runtime_role`. A `public` owner of `pg_database_owner` is valid when the supplied owner owns the database. The script validates all object ownership before transactional grants.
+6. Change `EGAS_DB_*` to restricted `egas_app` credentials.
+7. On a fresh database only, set temporary `EGAS_BOOTSTRAP_ADMIN_*` values and run `npm run admin:bootstrap`. It prints success, closes the pool, and returns code 0. If a privileged Admin exists, keep it; bootstrap refuses safely.
+8. Run `npm run pilot:check` as `egas_app`.
+9. Run `npm run build`, `npm test`, `npm run typecheck`, and `npm run security:check`.
+10. Run `npm run dev` (or `npm run build` then `npm start`) behind a same-origin HTTPS reverse proxy for production.
 
-`pilot:check` is expected to exit non-zero until all 22 active routing units have active authority coverage and an annual employee snapshot has been activated. These are explicit later-phase setup gates, not permission to invent mappings or activate synthetic employee data.
+The expected current preflight is:
 
-Never move pilot state by copying source-controlled secrets or real HR files. Use an approved future backup/restore procedure or repeat the controlled importer after it is implemented.
+- database runtime role: true (`egas_app`)
+- active routing units: true (22/22)
+- privileged Admin: true
+- authority coverage: false (0/22 until genuine primary assignments exist)
+- active annual snapshot: false (until an approved import is activated in a later phase)
+
+Consequently `pilot:check` must exit non-zero at this stage. Do not invent authority mappings or activate synthetic employee data to make it green.
+
+After each controlled migration, rerun the grant script as the object owner/controlled DBA. Historical `cds_model` and `cds_outbox_messages` tables are preserved on upgraded databases but the Express runtime does not access them; the current grant script revokes runtime privileges on both.

@@ -1,4 +1,6 @@
-# Codex Prompt — Phase 1 Backend & Database Foundation
+# Historical Codex Prompt — Superseded Phase 1 CAP Foundation
+
+> Historical handoff retained for audit traceability. Its SAP CAP implementation instructions were superseded by the verified Express/`pg` migration documented in `docs/cap-to-node-parity.md`; it is not active engineering guidance.
 
 You are implementing Phase 1 of the backend and database for the **EGAS Promotion & Secondment Workflow System**.
 

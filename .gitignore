@@ -6,7 +6,7 @@ coverage/
 .nyc_output/
 tmp/
 
-# Machine-local CAP and environment configuration
+# Machine-local environment configuration (legacy CAP binding remains ignored for history)
 .env
 .env.*
 !.env.example
@@ -40,6 +40,3 @@ backups/
 .vscode/
 .DS_Store
 Thumbs.db
-
-# Generated CDS model types
-@cds-models/
