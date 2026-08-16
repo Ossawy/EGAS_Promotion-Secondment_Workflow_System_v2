@@ -496,3 +496,10 @@ svg { flex: 0 0 auto; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+.brand-mark__logo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
