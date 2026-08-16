@@ -1,95 +1,55 @@
-# Phase 2A authentication and Admin API contract
+# Phase 2A Express REST API
 
-This document is the integration contract for the later React clients. The CAP services use OData V4 conventions: unbound actions are `POST` requests with JSON bodies, and functions are `GET` requests (normally with parentheses and URL parameters). CAP may wrap collection results in its standard `value` envelope.
+All responses are JSON except successful logout (`204`). Unknown resources return `404`. Validation/authentication/authorization/conflict/rate failures use `400/401/403/409/429`; unexpected failures return a generic `500` without SQL or stack details.
 
 ## Browser/session contract
 
-- Serve the browser application from the API origin, or use a same-origin development proxy. CAP CORS is disabled.
-- Send requests with browser credentials enabled. Never copy the session token into JavaScript storage.
-- `POST /auth/login` sets `EGAS_SESSION` (configurable) as `HttpOnly`, `SameSite=Strict`, path `/`, with the session absolute expiration. It also sets a readable `EGAS_CSRF` cookie with the same scope and expiration.
-- For every authenticated mutation, read `EGAS_CSRF` and send the exact value in `X-CSRF-Token`. The server compares header, cookie, and the current session's stored hash and checks the request Origin. Login performs its own trusted-Origin check.
-- Login, password change, and active-role selection rotate credentials. Replace no client state manually; accept the new cookies returned by the response.
-- A `401` means the session is absent/expired/revoked. A `403` means the authenticated session lacks the selected role/privilege, password change is still mandatory, or CSRF/origin validation failed.
-- Do not cache authentication responses. The service sets `Cache-Control: no-store` when issuing or clearing credentials.
+- Use the API origin or a same-origin proxy and browser credentials.
+- The configurable session cookie is `HttpOnly`, `SameSite=Strict`, `Path=/`, explicitly expires, and is `Secure` when configured (mandatory in production).
+- The companion `<session-name>_CSRF` cookie is readable. Every authenticated mutation sends its exact value in `X-CSRF-Token`; the API compares header, cookie, stored session hash, and trusted Origin.
+- Login, password change, and role selection issue/rotate cookies. Raw session/CSRF tokens are never returned in JSON or stored in browser storage.
+- `401` means no valid session. `403` means the selected role/privilege, password-change, CSRF, or Origin requirement failed.
 
-## AuthService (`/auth`)
+## Authentication
 
-### Login
+| Method/path | Request | Result |
+|---|---|---|
+| `POST /api/auth/login` | `{username,password}` | Safe user context and cookies. Generic credential errors; exactly one role is selected automatically, otherwise `activeRole:null`. |
+| `GET /api/auth/me` | none | Current safe user/role context. |
+| `POST /api/auth/change-password` | `{currentPassword,newPassword}` | Argon2id update, mandatory flag cleared, all sessions revoked, replacement session issued. |
+| `POST /api/auth/select-active-role` | `{role}` | Validates one active assignment, revokes old session, issues a session authorized only as that role. |
+| `POST /api/auth/logout` | empty object/body | Revokes current session, clears cookies; safe to repeat anonymously. |
 
-`POST /auth/login`
+Safe context includes `userId`, `username`, optional staff/job fields, `displayName`, `mustChangePassword`, `isActive`, `availableRoles`, and nullable `activeRole`. Password hashes and raw credentials are never returned.
 
-```json
-{ "username": "user", "password": "temporary-or-current-password" }
-```
+## Admin and authority routes
 
-The response contains only safe context: `userId`, `username`, optional staff/job fields, `displayName`, `mustChangePassword`, `isActive`, `availableRoles`, and nullable `activeRole`. Wrong credentials, nonexistent users, disabled users, locked users, and rate-limited identifiers receive a generic authentication failure. Five failures in the default ten-minute window lock a known account for the default fifteen minutes; identifier and IP evidence is database-backed.
+Every `/api/admin/*` route requires a valid session, `mustChangePassword=false`, and selected `activeRole=ADMIN`. An unselected Admin assignment conveys no authority. Admin-target/ADMIN-role security changes additionally require the selected assignment's `canManageAdmins=true`. Mutations require CSRF/Origin validation.
 
-When exactly one active assignment exists, it becomes the session role. A multi-role user receives `activeRole: null` and must select one. No permissions are combined.
+| Method/path | Purpose |
+|---|---|
+| `GET /api/admin/users?search=&skip=&top=` | Bounded safe user/role list (top max 100). |
+| `GET /api/admin/users/:id` | Safe account detail. |
+| `POST /api/admin/users` | Create account with distinct explicit roles and forced password change. |
+| `PATCH /api/admin/users/:id` | Version-checked profile update. |
+| `POST /api/admin/users/:id/roles` | Assign/reactivate a role and revoke sessions. |
+| `DELETE /api/admin/users/:id/roles/:role` | Revoke role and sessions. |
+| `POST /api/admin/users/:id/disable` / `enable` | Version-checked soft disable/enable. |
+| `POST /api/admin/users/:id/unlock` | Clear failure/lock state. |
+| `POST /api/admin/users/:id/reset-password` | Argon2id temporary password, mandatory change, session revocation. |
+| `GET/POST /api/admin/authority-assignments` | List or create assignments. |
+| `PATCH /api/admin/authority-assignments/:id` | Version-checked update. |
+| `POST /api/admin/authority-assignments/:id/deactivate` | Deactivate assignment and delegations. |
+| `GET/POST /api/admin/delegations` | List or create delegations. |
+| `PATCH /api/admin/delegations/:id` | Version-checked update. |
+| `POST /api/admin/delegations/:id/deactivate` | Explicit deactivation. |
 
-### Current user
+Account self-deactivation/self-role changes are prohibited and at least one active Manage-Admins account must remain. Authority assignment requires an active routing unit and active `APPROVING_AUTHORITY` account, permits one active primary per unit, and blocks Admin self-configuration. Delegations require eligible parties, ordered dates, and no self-delegation; no unsupported overlap rule is invented.
 
-`GET /auth/me()`
+## Reference and health
 
-Returns the same safe context for the current session. This and logout remain available while `mustChangePassword=true`; normal Admin/business access does not.
+- `GET /health` — liveness.
+- `GET /ready` — database readiness.
+- Authenticated: `GET /api/reference/routing-units`, `/job-categories`, `/qualification-statuses`.
 
-### Mandatory/current password change
-
-`POST /auth/changePassword`
-
-```json
-{ "currentPassword": "current-password", "newPassword": "new-password-at-least-14-characters" }
-```
-
-The current password is verified, the new password must differ, Argon2id is used, all old sessions are revoked, `mustChangePassword` is cleared, and a new session/CSRF pair is issued atomically. Failed current-password attempts use the same database-backed failure evidence as login.
-
-### Select active role
-
-`POST /auth/selectActiveRole`
-
-```json
-{ "role": "ORGANIZATION" }
-```
-
-Allowed values are `ADMIN`, `EMPLOYEE_AFFAIRS`, `ORGANIZATION`, and `APPROVING_AUTHORITY`. The account must own an active assignment. The old session is revoked and a new session with exactly that role is issued.
-
-### Logout
-
-`POST /auth/logout`
-
-Requires CSRF for an authenticated session, revokes it server-side, clears both cookies, records a security event, and is safe to repeat after the session is gone.
-
-## AdminService (`/admin`)
-
-Every operation requires an authenticated session with selected `activeRole=ADMIN` and `mustChangePassword=false`. Possessing an unselected Admin assignment is insufficient. Mutations also require CSRF. Admin-account operations targeting Admin users and Admin role changes require the actor's selected Admin assignment to have `canManageAdmins=true`.
-
-Read functions:
-
-- `GET /admin/listUsers(search=...,skip=0,top=50)` — bounded to 100 rows and returns safe account/role data.
-- `GET /admin/getUser(userId=...)`
-- `GET /admin/listAuthorityAssignments(routingUnitId=...,activeOnly=true)`
-- `GET /admin/listDelegations(assignmentId=...,activeOnly=true)`
-- Read-only `RoutingUnits`, `JobCategories`, and `QualificationStatuses` reference projections.
-
-Named mutation actions:
-
-- `createUser`, `updateUser`
-- `assignRole`, `revokeRole`
-- `disableUser`, `enableUser`, `unlockUser`, `resetPassword`
-- `createAuthorityAssignment`, `updateAuthorityAssignment`, `deactivateAuthorityAssignment`
-- `createDelegation`, `updateDelegation`, `deactivateDelegation`
-
-Use the fields declared in `services/cap-api/srv/admin-service.cds`. Account, assignment, and delegation updates/deactivations require `expectedVersion`; stale requests return `409`. Account creation supports one or more distinct roles, stores only an Argon2id temporary-password hash, and forces password change. Role/account security changes revoke target sessions. Accounts are disabled, never hard-deleted.
-
-The service prevents Admin self-deactivation and self role changes and preserves at least one active Admin with `canManageAdmins=true`. An approving-authority assignment requires an active routing unit and an active account with an active `APPROVING_AUTHORITY` role. Only one active primary assignment may exist per routing unit. Delegations remain attached to the primary assignment, require an eligible delegate, enforce ordered dates, and reject self-delegation. The baseline defines no additional overlapping-delegation rule, so Phase 2A does not invent one.
-
-## Configuration
-
-Required/available machine-local variables are documented in `.env.example`. Important values are:
-
-- `EGAS_AUTH_FINGERPRINT_SECRET` — unique secret, minimum 32 characters, required outside isolated tests.
-- `EGAS_SESSION_COOKIE_NAME`, `EGAS_SESSION_IDLE_MINUTES`, `EGAS_SESSION_ABSOLUTE_HOURS`.
-- `EGAS_REQUIRE_SECURE_COOKIE` — must be `true` in production; HTTPS is required.
-- `EGAS_LOGIN_WINDOW_MINUTES`, `EGAS_LOGIN_FAILURE_LIMIT`, `EGAS_LOGIN_LOCKOUT_MINUTES`.
-- `EGAS_ALLOWED_ORIGINS` — optional additional trusted Origin values; it does not enable CORS.
-
-The local authentication middleware is active in development and production. CAP mocked users are configured only for the isolated test profile.
+No OData or generic persistence routes exist. Workflow/state/snapshot entities remain unexposed pending separately approved phases.

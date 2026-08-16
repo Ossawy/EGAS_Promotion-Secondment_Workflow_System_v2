@@ -1,0 +1,253 @@
+-- EGAS post-deployment runtime grants (psql script).
+--
+-- Run this AFTER `npm run db:migrate`, connected to the target database as
+-- the schema/migration owner (or a controlled DBA that is a member of it).
+-- Supply identifiers as psql variables; never put passwords in this file:
+--
+-- psql --dbname egas_workflow_dev --username egas_migrator \
+--   --set=database_name=egas_workflow_dev \
+--   --set=schema_owner=egas_migrator \
+--   --set=runtime_role=egas_app \
+--   --file services/api/db/operations/least-privilege-role.sql.example
+--
+-- This script is idempotent. Rerun it after each controlled migration.
+
+\set ON_ERROR_STOP on
+
+\if :{?database_name}
+\else
+  \echo 'Missing required psql variable: database_name'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+\if :{?schema_owner}
+\else
+  \echo 'Missing required psql variable: schema_owner'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+\if :{?runtime_role}
+\else
+  \echo 'Missing required psql variable: runtime_role'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+
+SELECT current_database() = :'database_name' AS connected_to_target \gset
+\if :connected_to_target
+\else
+  \echo 'Refusing grants: connection is not using database_name'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+
+SELECT
+  EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'schema_owner') AS schema_owner_exists,
+  EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime_role') AS runtime_role_exists
+\gset
+\if :schema_owner_exists
+\else
+  \echo 'Refusing grants: schema_owner role does not exist'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+\if :runtime_role_exists
+\else
+  \echo 'Refusing grants: runtime_role does not exist'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+
+SELECT
+  -- PostgreSQL 15+ commonly assigns public to pg_database_owner, whose one
+  -- implicit member is the current database owner. The outer database-owner
+  -- check keeps this alternative bound to the supplied schema_owner.
+  d.datdba = owner_role.oid
+    AND (
+      public_schema.nspowner = owner_role.oid
+      OR public_schema.nspowner = predefined_database_owner.oid
+    ) AS owner_boundaries_match,
+  NOT EXISTS (
+    SELECT 1
+    FROM pg_class AS deployment_object
+    WHERE deployment_object.relnamespace = public_schema.oid
+      AND deployment_object.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+      AND deployment_object.relowner <> owner_role.oid
+  ) AS deployment_objects_owned_by_schema_owner,
+  NOT runtime_role.rolsuper
+    AND NOT runtime_role.rolcreatedb
+    AND NOT runtime_role.rolcreaterole
+    AND NOT runtime_role.rolreplication
+    AND NOT runtime_role.rolbypassrls
+    AND runtime_role.oid <> owner_role.oid
+    AND NOT pg_has_role(runtime_role.oid, owner_role.oid, 'MEMBER')
+    AND d.datdba <> runtime_role.oid
+    AND public_schema.nspowner <> runtime_role.oid AS runtime_role_is_restricted,
+  current_user = :'schema_owner'
+    OR pg_has_role(current_user, :'schema_owner', 'MEMBER') AS may_manage_owner_defaults
+FROM pg_database AS d
+JOIN pg_roles AS owner_role ON owner_role.rolname = :'schema_owner'
+JOIN pg_roles AS runtime_role ON runtime_role.rolname = :'runtime_role'
+JOIN pg_namespace AS public_schema ON public_schema.nspname = 'public'
+LEFT JOIN pg_roles AS predefined_database_owner
+  ON predefined_database_owner.rolname = 'pg_database_owner'
+WHERE d.datname = current_database()
+\gset
+
+\if :owner_boundaries_match
+\else
+  \echo 'Refusing grants: schema_owner must own the database; public must be owned by schema_owner or pg_database_owner'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+\if :deployment_objects_owned_by_schema_owner
+\else
+  \echo 'Refusing grants: every public table, view, and sequence must be owned by schema_owner'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+\if :runtime_role_is_restricted
+\else
+  \echo 'Refusing grants: runtime_role is privileged, owns deployment objects, or inherits schema_owner'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+\if :may_manage_owner_defaults
+\else
+  \echo 'Refusing grants: current user cannot alter schema_owner default privileges'
+  SELECT 1 / 0 AS validation_failure;
+\endif
+
+BEGIN;
+
+-- Make database/schema access explicit. Privileges inherited through PUBLIC
+-- would defeat a direct role revoke, so CREATE and TEMPORARY are removed too.
+REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE :"database_name" FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON DATABASE :"database_name" FROM :"runtime_role";
+GRANT CONNECT, CREATE, TEMPORARY ON DATABASE :"database_name" TO :"schema_owner";
+GRANT CONNECT ON DATABASE :"database_name" TO :"runtime_role";
+REVOKE CREATE ON DATABASE :"database_name" FROM :"runtime_role";
+
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM :"runtime_role";
+GRANT USAGE ON SCHEMA public TO :"runtime_role";
+
+-- Reset accidental/manual grants before assigning the runtime DML surface.
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM :"runtime_role";
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM :"runtime_role";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"runtime_role";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO :"runtime_role";
+
+-- Future objects created by the schema owner inherit runtime access.
+-- A migration that adds a new append-only table must revoke UPDATE/DELETE in
+-- the same release and add it to the explicit list below.
+ALTER DEFAULT PRIVILEGES FOR ROLE :"schema_owner" IN SCHEMA public
+  REVOKE ALL PRIVILEGES ON TABLES FROM :"runtime_role";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"schema_owner" IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"runtime_role";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"schema_owner" IN SCHEMA public
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM :"runtime_role";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"schema_owner" IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO :"runtime_role";
+
+-- Defense in depth: triggers also reject mutations, while privileges prevent
+-- the runtime role from requesting UPDATE/DELETE at all.
+REVOKE UPDATE, DELETE ON TABLE
+  egas_AuditEvent,
+  egas_WorkflowNote,
+  egas_StageReceivedSnapshot,
+  egas_StageAction,
+  egas_WorkflowSignoff
+FROM :"runtime_role";
+
+-- Migration bookkeeping belongs to the controlled migration command.
+REVOKE INSERT, UPDATE, DELETE ON TABLE egas_SchemaMigration FROM :"runtime_role";
+
+-- The historical CAP outbox table is preserved in upgraded databases for
+-- data/schema continuity, but the plain Node runtime must never access it.
+SELECT to_regclass('public.cds_outbox_messages') IS NOT NULL AS historical_outbox_exists \gset
+\if :historical_outbox_exists
+  REVOKE ALL PRIVILEGES ON TABLE cds_outbox_messages FROM :"runtime_role";
+\endif
+SELECT to_regclass('public.cds_model') IS NOT NULL AS historical_cap_model_exists \gset
+\if :historical_cap_model_exists
+  REVOKE ALL PRIVILEGES ON TABLE cds_model FROM :"runtime_role";
+\endif
+
+-- Prove the critical boundaries before committing. Separate checks are used
+-- for each outbox privilege so this cannot pass with only a subset of DML.
+SELECT
+  has_database_privilege(:'runtime_role', :'database_name', 'CONNECT') AS verified_connect,
+  NOT has_database_privilege(:'runtime_role', :'database_name', 'CREATE') AS verified_no_database_create,
+  NOT has_database_privilege(:'runtime_role', :'database_name', 'TEMPORARY') AS verified_no_temporary,
+  has_schema_privilege(:'runtime_role', 'public', 'USAGE') AS verified_schema_usage,
+  NOT has_schema_privilege(:'runtime_role', 'public', 'CREATE') AS verified_no_schema_create,
+  CASE WHEN to_regclass('public.cds_outbox_messages') IS NULL THEN TRUE ELSE
+    NOT has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'SELECT')
+    AND NOT has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'INSERT')
+    AND NOT has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'UPDATE')
+    AND NOT has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'DELETE')
+  END AS verified_no_historical_outbox_access,
+  CASE WHEN to_regclass('public.cds_model') IS NULL THEN TRUE ELSE
+    NOT has_table_privilege(:'runtime_role', 'public.cds_model', 'SELECT')
+    AND NOT has_table_privilege(:'runtime_role', 'public.cds_model', 'INSERT')
+    AND NOT has_table_privilege(:'runtime_role', 'public.cds_model', 'UPDATE')
+    AND NOT has_table_privilege(:'runtime_role', 'public.cds_model', 'DELETE')
+  END AS verified_no_historical_cap_model_access
+\gset
+
+\if :verified_connect
+\else
+  ROLLBACK;
+  \echo 'Grant verification failed: runtime_role cannot CONNECT'
+  SELECT 1 / 0 AS verification_failure;
+\endif
+\if :verified_no_database_create
+\else
+  ROLLBACK;
+  \echo 'Grant verification failed: runtime_role can CREATE schemas'
+  SELECT 1 / 0 AS verification_failure;
+\endif
+\if :verified_no_temporary
+\else
+  ROLLBACK;
+  \echo 'Grant verification failed: runtime_role can create temporary tables'
+  SELECT 1 / 0 AS verification_failure;
+\endif
+\if :verified_schema_usage
+\else
+  ROLLBACK;
+  \echo 'Grant verification failed: runtime_role lacks public schema USAGE'
+  SELECT 1 / 0 AS verification_failure;
+\endif
+\if :verified_no_schema_create
+\else
+  ROLLBACK;
+  \echo 'Grant verification failed: runtime_role can CREATE objects in public'
+  SELECT 1 / 0 AS verification_failure;
+\endif
+\if :verified_no_historical_outbox_access
+\else
+  ROLLBACK;
+  \echo 'Grant verification failed: runtime_role can access historical CAP outbox'
+  SELECT 1 / 0 AS verification_failure;
+\endif
+\if :verified_no_historical_cap_model_access
+\else
+  ROLLBACK;
+  \echo 'Grant verification failed: runtime_role can access historical CAP model metadata'
+  SELECT 1 / 0 AS verification_failure;
+\endif
+COMMIT;
+
+-- Read-only verification summary. The CREATE columns must be false; the other
+-- reported capabilities must be true.
+SELECT
+  has_database_privilege(:'runtime_role', :'database_name', 'CONNECT') AS runtime_can_connect,
+  has_database_privilege(:'runtime_role', :'database_name', 'CREATE') AS runtime_can_create_schema,
+  has_database_privilege(:'runtime_role', :'database_name', 'TEMPORARY') AS runtime_can_create_temp_objects,
+  has_schema_privilege(:'runtime_role', 'public', 'USAGE') AS runtime_has_schema_usage,
+  has_schema_privilege(:'runtime_role', 'public', 'CREATE') AS runtime_can_create_in_public,
+  CASE WHEN to_regclass('public.cds_outbox_messages') IS NULL THEN FALSE ELSE
+    has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'SELECT')
+    OR has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'INSERT')
+    OR has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'UPDATE')
+    OR has_table_privilege(:'runtime_role', 'public.cds_outbox_messages', 'DELETE')
+  END AS runtime_can_access_historical_outbox,
+  CASE WHEN to_regclass('public.cds_model') IS NULL THEN FALSE ELSE
+    has_table_privilege(:'runtime_role', 'public.cds_model', 'SELECT')
+    OR has_table_privilege(:'runtime_role', 'public.cds_model', 'INSERT')
+    OR has_table_privilege(:'runtime_role', 'public.cds_model', 'UPDATE')
+    OR has_table_privilege(:'runtime_role', 'public.cds_model', 'DELETE')
+  END AS runtime_can_access_historical_cap_model;

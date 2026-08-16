@@ -1,175 +1,78 @@
 # EGAS Promotion & Secondment Workflow System
 
-Phase 2A provides the backend/database foundation plus local authentication, server-side sessions, and controlled Admin APIs for the EGAS Promotion & Secondment Workflow System. The repository contains a SAP CAP Node.js/TypeScript modular monolith under `services/cap-api`; frontend applications, annual import, and P1-P5/S1-S5 workflow transitions remain outside this phase.
+The implemented Phase 1/2A backend is a plain Node.js/TypeScript modular monolith:
 
-## Implemented foundation
+```text
+React + TypeScript (future client)
+        -> HTTPS REST/JSON
+Node.js + TypeScript + Express 5
+        -> pg / node-postgres
+PostgreSQL
+```
 
-- CAP 10 Node.js project with TypeScript, generated CDS types, PostgreSQL through `@cap-js/postgres`, and SQLite only for isolated tests.
-- Domain-separated CDS for reference/routing, accounts/sessions, annual HR snapshots/import staging, authority assignments/delegations, immutable signatures, workflow records, notifications, notes, audit, and PDF metadata.
-- The final 22 routing units, five job categories, and two qualification-status values as repository-owned reference seeds.
-- Replaceable `AuthenticationProvider` and `EmployeeDataProvider` interfaces with local PostgreSQL implementations.
-- Explicit login, current-user, password-change, role-switch, and logout actions using opaque server-side sessions; only token/CSRF hashes are persisted.
-- Active-role authentication middleware that authorizes a session under exactly one selected role rather than unioning all account roles.
-- Controlled Admin actions for accounts, role assignments, locks, password resets, approving-authority assignments, and delegations; sensitive persistence entities are not exposed as generic CRUD.
-- A controlled first-Admin bootstrap command using Argon2id and environment-supplied values; there is no public Admin registration endpoint.
-- A validation-only annual `.xlsx` command skeleton with file/container/size limits, exact header-name validation, duplicate-header rejection, row bounds, and no direct active-snapshot writes.
-- Read-only reference endpoints and explicit Auth/Admin/Employee Data/Workflow/Audit/Document/Health service boundaries. Workflow and audit persistence are not exposed as generic CRUD.
-- Versioned PostgreSQL integrity migration for partial indexes, checks, atomic selection defense, append-only tables, and anti-self-delegation protection.
+The original BRD and authoritative v2.0 PDF retain SAP/Fiori/direct-HCM references for historical traceability. Following IT consultation, those implementation choices were superseded. The active backend has no SAP CAP, CDS, CQN, Fiori, UI5, BTP, OData, RFC, or BAPI dependency.
 
-The complete database comparison is in [docs/database-parity.md](docs/database-parity.md).
+## Implemented scope
 
-## Prerequisites
+- Express REST health, authentication, reference, Admin-account, role, approving-authority, and delegation APIs.
+- Argon2id passwords; opaque random sessions; only SHA-256 session/CSRF hashes stored.
+- 30-minute idle and 8-hour absolute defaults, session rotation/revocation, mandatory initial password change, trusted-Origin and CSRF enforcement.
+- Authorization under exactly one selected active role; assigned roles are never unioned.
+- PostgreSQL-backed login evidence, generic failures, configurable 5/10/15 failure policy, and advisory-lock serialization.
+- Privileged first-Admin bootstrap and last-active-Manage-Admins/self-change protections.
+- Transactional security events for authentication and Admin/authority/delegation mutations.
+- Preserved 31 `egas_*` tables plus historical `cds_model` and `cds_outbox_messages` (33 public tables), physical names, data, migration ledger, constraints, triggers, and reference rows. The historical CAP tables are not accessed.
+- A validation-only annual `.xlsx` inspector. It performs no database writes.
 
-- Node.js 22 or newer.
-- PostgreSQL on a private/local interface.
-- Two PostgreSQL roles for a real deployment:
-  - a schema owner/migration role used only for controlled deployment;
-  - a restricted runtime application role that is not a superuser, table owner, owner-role member, or `BYPASSRLS` role.
+Annual activation, employee lookup, P1-P5/S1-S5 workflow, signatures, PDFs, workflow notifications, and React screens remain intentionally deferred.
 
-The application browser must never receive either database credential.
+## Configuration
 
-## Local backend setup
+Node.js 22+ and PostgreSQL are required. Copy [.env.example](.env.example) to `services/api/.env`; never commit the result. Normal runtime uses `EGAS_DB_NAME=egas_workflow_dev` and restricted `EGAS_DB_USER=egas_app`. The schema/migration owner is used only for `db:migrate` and the grant script.
 
-1. Install the locked dependencies from the repository root:
+Production requires HTTPS, `NODE_ENV=production`, `EGAS_REQUIRE_SECURE_COOKIE=true`, and a unique `EGAS_AUTH_FINGERPRINT_SECRET` of at least 32 characters. Startup validates all values and fails closed. The API does not enable permissive CORS; deploy the browser on the same origin or through a same-origin proxy.
 
-   ```powershell
-   npm install
-   npm run setup
-   ```
+## Fresh setup
 
-2. On a fresh installation, connect as a controlled PostgreSQL administrator and create separate login roles and an empty database. The names below are examples; keep the three names consistent in later commands. Use `\password` or an approved secret manager so passwords do not enter shell history:
-
-   ```sql
-   CREATE ROLE egas_migrator LOGIN
-     NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-   \password egas_migrator
-
-   CREATE ROLE egas_app LOGIN
-     NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-   \password egas_app
-
-   CREATE DATABASE egas_workflow_dev OWNER egas_migrator;
-   \connect egas_workflow_dev
-   ALTER SCHEMA public OWNER TO egas_migrator;
-   ```
-
-   `egas_migrator` is the database/public-schema owner used only for controlled deployment. `egas_app` must not own the database or schema, inherit the owner role, or receive `CREATE`, superuser, `CREATEDB`, `CREATEROLE`, replication, or `BYPASSRLS` privileges.
-
-3. Copy the example into the CAP project and edit only the untracked copy:
+1. Install packages: `npm install`, then `npm run setup`.
+2. As a controlled DBA, create a database, schema/migration-owner login, and separate restricted runtime login. Passwords belong in `psql` prompts or a secret manager, not shell history.
+3. Put migration-owner credentials in the private `services/api/.env`, then run `npm run db:migrate`.
+4. Apply runtime grants as the owner/controlled DBA:
 
    ```powershell
-   Copy-Item .env.example services/cap-api/.env
-   ```
-
-   Generate a unique `EGAS_AUTH_FINGERPRINT_SECRET` of at least 32 characters. Production also requires HTTPS and `EGAS_REQUIRE_SECURE_COOKIE=true`; startup fails closed if these requirements are missing.
-
-4. Configure the untracked/private CAP binding with the database name and `egas_migrator` credentials. Run the CAP-owned schema deployment and repository migrations:
-
-   ```powershell
-   npm run db:migrate
-   ```
-
-   This invokes CAP schema evolution/reference seeding before applying the versioned PostgreSQL-only migrations. Do not run the frozen logical-baseline SQL.
-
-5. Still using the migration owner, apply the idempotent runtime grants after every controlled migration. The script verifies the three ownership/role boundaries before changing privileges:
-
-   ```powershell
-   psql --dbname egas_workflow_dev --username egas_migrator `
+   psql --dbname egas_workflow_dev --username postgres `
      --set=database_name=egas_workflow_dev `
-     --set=schema_owner=egas_migrator `
+     --set=schema_owner=postgres `
      --set=runtime_role=egas_app `
-     --file services/cap-api/db/operations/least-privilege-role.sql.example
+     --file services/api/db/operations/least-privilege-role.sql.example
    ```
 
-   This covers all current CAP tables, `cds_outbox_messages`, required sequence access, and owner-scoped default privileges for future tables/sequences. It then removes UPDATE/DELETE from append-only entities and write access from `egas_SchemaMigration`. The runtime role receives no database/schema `CREATE` privilege.
+   Substitute the actual object owner. PostgreSQL's `pg_database_owner` ownership of `public` is valid when the supplied schema owner owns the database. The script verifies every public table/sequence owner, is transactional/fail-closed, grants runtime DML/sequence use and owner-scoped defaults, preserves append-only restrictions, denies database/schema `CREATE` and `TEMPORARY`, and revokes historical outbox access.
+5. Switch the private environment to `egas_app` credentials.
+6. On a fresh database only, set `EGAS_BOOTSTRAP_ADMIN_*` and run `npm run admin:bootstrap`. It refuses if a privileged Admin already exists and always closes the pool before exiting.
+7. Run `npm run pilot:check`, then `npm run dev`.
 
-6. Switch the private CAP binding from migration-owner credentials to the restricted `egas_app` credentials. Set the machine-local `EGAS_BOOTSTRAP_ADMIN_*` values and, on a fresh database only, run:
-
-   ```powershell
-   npm run admin:bootstrap
-   ```
-
-   The bootstrap transaction creates the first privileged Admin, closes the CAP database pool, and exits normally. If a privileged Admin already exists, the command refuses safely; do not alter or delete that Admin merely to rerun bootstrap.
-
-7. Run the preflight:
-
-   ```powershell
-   npm run pilot:check
-   ```
-
-   During the Phase 1/Phase 2 boundary, this command is expected to exit non-zero until all 22 active routing units have active primary-authority coverage and an annual employee snapshot has been activated. Do not invent authority mappings or activate synthetic employee data to make the preflight green.
-
-8. Start the API:
-
-   ```powershell
-   npm run dev
-   ```
-
-9. Run the quality gates:
-
-   ```powershell
-   npm run build
-   npm test
-   npm run security:check
-   ```
-
-## Authentication and sessions
-
-`AuthService` is mounted at `/auth` and provides `login`, `me`, `changePassword`, `selectActiveRole`, and `logout`. Login verifies Argon2id credentials and applies database-backed identifier/IP failure limits. It returns safe account context while placing an opaque session token only in the `HttpOnly`, `SameSite=Strict` session cookie. PostgreSQL stores SHA-256 hashes, never raw session or CSRF tokens. Sessions enforce the configured idle and absolute expiry and are revoked or rotated after password, role, account, and authority-security changes.
-
-Users with more than one active assignment must explicitly select one active role. Authorization uses only that role. A temporary-password account can call only `me`, `changePassword`, and `logout` until the password is changed. Development and production use the local session middleware; mocked users exist only in the isolated `test` profile. Production refuses insecure-cookie configuration or a missing/short fingerprint secret.
-
-Cookie-authenticated mutations require an exact trusted Origin when supplied and the double-submit `X-CSRF-Token` value backed by the current session's stored CSRF hash. The readable CSRF cookie is issued on login and each session rotation. A future React application should be served from the same origin (or use a same-origin development proxy), send credentials, read the CSRF cookie, and copy it to `X-CSRF-Token`. CORS is deliberately disabled.
-
-The complete request/response and Admin action contract is in [docs/phase2a-api.md](docs/phase2a-api.md).
-
-## Admin APIs
-
-All `/admin` operations require an authenticated session whose selected role is exactly `ADMIN`; merely owning an unselected Admin role grants nothing. Admin-account changes involving Admin targets require `canManageAdmins=true`, prohibit dangerous self-management, and preserve at least one active Manage-Admins account. Bootstrap is only for the first privileged account. Normal accounts, multiple explicit role assignments, authority mappings, and temporary delegations are managed through named Admin actions and audited transactionally.
-
-## Existing database warning
-
-The frozen logical SQL uses tables such as `egas.routing_unit`; CAP persistence uses repository-owned CDS artifacts with CAP physical names such as `public.egas_routingunit`. `npm run db:migrate` checks for the handwritten baseline and stops before deployment if it finds that schema without the CAP schema. It never drops or recreates a database.
-
-If a clean development database was initialized from the handwritten SQL, back it up, prove that it contains no required data, and obtain explicit approval before recreating it for CAP. If it contains useful data, design and review a one-time data migration. Do not maintain both schemas in parallel.
+Existing installations must not recreate the database or run the frozen logical SQL. The migration runner recognizes the existing CAP-era physical schema as the immutable baseline, verifies all expected tables, preserves migration 001/checksum history, and applies only missing versioned SQL. Fresh empty installations use the repository baseline and the same versioned migrations.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `npm run dev` | Start CAP in watch mode against configured PostgreSQL. |
-| `npm run pilot` | Phase 1 backend-only pilot alias; frontend is not part of this task. |
-| `npm run build` | Clean generated output, compile CDS, generate types, typecheck, and produce production CAP/PostgreSQL build artifacts. |
-| `npm test` | Run SQLite-isolated foundation and Phase 2A tests with synthetic identities only. |
-| `npm run db:migrate` | Apply CAP schema evolution/seeds plus versioned PostgreSQL invariants. |
-| `npm run db:deploy` | Raw CAP deploy only; normal setup should use `db:migrate`. |
-| `npm run admin:bootstrap` | Create the first Manage-Admins account from environment values. |
-| `npm run data:import -- --file <xlsx> --year <YYYY>` | Validate workbook safety and exact headers without database writes in Phase 1. |
-| `npm run pilot:check` | Check restricted DB identity, 22 routing units, privileged Admin, annual snapshot, and authority coverage. |
-| `npm run security:secrets` | Scan the worktree for supported secret signatures. |
-| `npm run security:scan` | Run dependency audit (high+) and TypeScript checks. |
-| `npm run security:check` | Run secret scan, dependency/type checks, and automated tests. |
+| `npm run dev` | Start the Express API with TypeScript watch mode. |
+| `npm start` | Start the built Express API. Run `npm run build` first. |
+| `npm run build` | Compile production JavaScript and copy SQL assets. |
+| `npm test` | Run isolated Vitest/PostgreSQL-compatible parity tests; never the live DB. |
+| `npm run typecheck` | Type-check without emitting files. |
+| `npm run db:migrate` | Apply the preserved baseline when empty and missing versioned migrations. |
+| `npm run admin:bootstrap` | Transactionally create the first privileged Admin. |
+| `npm run data:import -- --file <xlsx> --year <YYYY>` | Validate workbook safety/headers without writes. |
+| `npm run pilot:check` | Check runtime role, routing units, Admin, authority coverage, and snapshot. |
+| `npm run security:check` | Secret scan, dependency audit, typecheck, and tests. |
 
-## Admin bootstrap
+`pilot:check` is expected to exit non-zero until all 22 active routing units have active primary-authority coverage and an annual employee snapshot is activated. Do not invent mappings or synthetic employee data to make it green.
 
-Set the `EGAS_BOOTSTRAP_ADMIN_*` variables only in machine-local configuration, use a temporary password of at least 14 characters, then run `npm run admin:bootstrap` once on a fresh database. The command takes a PostgreSQL advisory transaction lock, refuses to run when a Manage-Admins assignment already exists, stores only an Argon2id hash, and sets `mustChangePassword=true`. It never prints the password. Whether the transaction succeeds or fails, the standalone command explicitly drains and closes its CAP database pool before exiting.
+See [docs/phase2a-api.md](docs/phase2a-api.md), [docs/postgresql-implementation.md](docs/postgresql-implementation.md), [docs/cap-to-node-parity.md](docs/cap-to-node-parity.md), and [PILOT_SETUP.md](PILOT_SETUP.md).
 
-## Annual import status
+## Security/repository policy
 
-The Phase 1 command is intentionally validation-only. It accepts `.xlsx` (not `.xls`/`.xlsm`), checks the ZIP container signature and bounded size/row count, finds exactly one sheet with the exact non-duplicated approved headers, and writes nothing. Transactional staging, normalization, routing-alias resolution, validation reporting, and explicit activation are the recommended next phase.
-
-## Database ownership
-
-The ownership chain is:
-
-`Final logical baseline SQL -> CAP CDS implementation -> versioned PostgreSQL migrations`
-
-The baseline SQL is retained for traceability and parity review. Developers do not independently edit and deploy it as a second runtime schema.
-
-Use the schema/migration owner only for `db:migrate` and the post-migration grant script. Run the service, bootstrap command, and pilot check with the restricted runtime role. Owner-scoped default privileges cover future CAP-created tables and sequences; every future append-only migration must revoke UPDATE/DELETE in the same release and extend the explicit restriction list in the grant script.
-
-## Security and repository policy
-
-`.env`, private CAP bindings, real HR spreadsheets, signature storage, generated employee PDFs, database backups, local databases, and build artifacts are ignored. Reference seeds contain no accounts, staff IDs, HR rows, passwords, or signatures. Any committed real secret must be rotated/revoked first, then removed from Git history and rescanned.
-
-Production authentication is fail-closed behind the local session middleware. It never falls back to mocked users. Never log passwords, raw session tokens, CSRF values, or private database credentials.
+Never commit credentials, real HR workbooks, signatures, generated employee PDFs, or database backups. Never log passwords, raw session/CSRF tokens, or database credentials. Untrusted SQL values must always use bound PostgreSQL parameters. Workflow state/snapshot/actor fields remain unavailable through generic client-writable CRUD.

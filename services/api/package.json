@@ -1,0 +1,48 @@
+{
+  "name": "@egas/api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EGAS Express 5 and PostgreSQL backend",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node scripts/setup-check.mjs",
+    "dev": "node --watch --watch-path=src scripts/dev.mjs",
+    "prepilot": "npm run build",
+    "pilot": "node dist/server.js",
+    "start": "node dist/server.js",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "predb:migrate": "npm run build",
+    "db:migrate": "node dist/db/migrate-cli.js",
+    "preadmin:bootstrap": "npm run build",
+    "admin:bootstrap": "node dist/modules/admin/bootstrap-cli.js",
+    "predata:import": "npm run build",
+    "data:import": "node dist/modules/import/cli.js",
+    "prepilot:check": "npm run build",
+    "pilot:check": "node dist/scripts/pilot-check.js",
+    "security:secrets": "node scripts/security-secrets.mjs",
+    "security:scan": "npm audit --audit-level=high && npm run typecheck",
+    "security:check": "npm run security:secrets && npm run security:scan && npm test"
+  },
+  "dependencies": {
+    "argon2": "^0.45.1",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.2.0",
+    "@types/pg": "^8.15.6",
+    "pg-mem": "^3.0.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
