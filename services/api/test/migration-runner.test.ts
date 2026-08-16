@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyMigration, executeFullPostgresScript, migrateDatabase } from '../src/db/migration-runner.js'
+import { applyMigration, executeFullPostgresScript, loadMigrations, migrateDatabase } from '../src/db/migration-runner.js'
 
 const script = `
 CREATE TABLE migration_probe (value text);
@@ -64,5 +64,14 @@ describe('PostgreSQL migration runner', () => {
     await expect(migrateDatabase(pool as never)).rejects.toThrow('handwritten egas.routing_unit')
     expect(query).toHaveBeenCalledWith('ROLLBACK')
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('loads the additive Phase 2B annual-snapshot integrity migration after immutable 001', async () => {
+    const migrations = await loadMigrations()
+    expect(migrations.map(migration => migration.version)).toEqual([
+      '001_postgres_integrity','002_phase2b_annual_snapshot_integrity'
+    ])
+    expect(migrations[1]?.sql).toContain('uq_egas_activated_import_batch_per_year')
+    expect(migrations[1]?.sql).toContain('trg_egas_employee_annual_snapshot_append_only')
   })
 })

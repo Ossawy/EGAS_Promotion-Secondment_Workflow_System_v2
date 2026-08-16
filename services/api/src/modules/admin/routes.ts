@@ -8,16 +8,25 @@ import { exactObject } from '../../shared/validation.ts'
 import { AppError } from '../../shared/errors.ts'
 import { AdminService, type AdminActor } from './admin-service.ts'
 import { AuthorityService } from '../authorities/authority-service.ts'
+import { ImportService, type ImportActor } from '../import/import-service.ts'
+import { RoutingAliasService } from '../import/routing-alias-service.ts'
 
 function actor(res: Parameters<typeof authContext>[0]): AdminActor {
   const auth = authContext(res)
   return { userId: auth.userId, canManageAdmins: auth.canManageAdmins }
 }
 
+function importActor(res: Parameters<typeof authContext>[0]): ImportActor {
+  const auth = authContext(res)
+  return { userId: auth.userId, username: auth.username }
+}
+
 function integer(value: unknown, fallback: number, field: string): number {
   if (value === undefined) return fallback
   if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new AppError(400, `${field} must be a non-negative integer`)
-  return Number(value)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed)) throw new AppError(400, `${field} is too large`)
+  return parsed
 }
 
 function queryBoolean(value: unknown): boolean | undefined {
@@ -27,10 +36,36 @@ function queryBoolean(value: unknown): boolean | undefined {
   throw new AppError(400, 'activeOnly must be true or false')
 }
 
+function optionalYear(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !/^\d{4}$/.test(value)) throw new AppError(400, 'year must be YYYY')
+  const year = Number(value)
+  if (year < 2000 || year > 2200) throw new AppError(400, 'year must be between 2000 and 2200')
+  return year
+}
+
+function importStatus(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !['STAGED','VALIDATED','ACTIVATED','FAILED','SUPERSEDED'].includes(value)) {
+    throw new AppError(400, 'Unsupported import status')
+  }
+  return value
+}
+
+function rowStatus(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !['PENDING','VALID','WARNING','BLOCKED'].includes(value)) {
+    throw new AppError(400, 'Unsupported validation status')
+  }
+  return value
+}
+
 export function adminRouter(pool: Pool, config: AppConfig): Router {
   const router = Router()
   const accounts = new AdminService(pool, config)
   const authorities = new AuthorityService(pool)
+  const imports = new ImportService(pool)
+  const aliases = new RoutingAliasService(pool)
   const csrf = csrfProtection(pool, config)
 
   router.use(requireAdmin)
@@ -120,6 +155,47 @@ export function adminRouter(pool: Pool, config: AppConfig): Router {
     res.json(await authorities.deactivateDelegation(
       actor(res), { ...body, delegationId: req.params.id }, evidence(res)
     ))
+  })
+
+  router.get('/routing-aliases', async (req, res) => {
+    res.json(await aliases.list(queryBoolean(req.query.activeOnly)))
+  })
+  router.post('/routing-aliases', csrf, async (req, res) => {
+    const body = exactObject(req.body, ['sourceLabel','routingUnitId','notes'])
+    res.status(201).json(await aliases.create(importActor(res), body, evidence(res)))
+  })
+  router.patch('/routing-aliases/:id', csrf, async (req, res) => {
+    const body = exactObject(req.body, ['sourceLabel','routingUnitId','isActive','notes'])
+    res.json(await aliases.update(importActor(res), req.params.id, body, evidence(res)))
+  })
+  router.post('/routing-aliases/:id/deactivate', csrf, async (req, res) => {
+    exactObject(req.body ?? {}, [])
+    res.json(await aliases.deactivate(importActor(res), req.params.id, evidence(res)))
+  })
+
+  router.get('/import-batches', async (req, res) => {
+    res.json(await imports.listBatches(
+      integer(req.query.skip, 0, 'skip'), Math.min(100, integer(req.query.top, 50, 'top')),
+      optionalYear(req.query.year), importStatus(req.query.status)
+    ))
+  })
+  router.get('/import-batches/:id', async (req, res) => res.json(await imports.getBatch(req.params.id)))
+  router.get('/import-batches/:id/rows', async (req, res) => {
+    res.json(await imports.listRows(
+      req.params.id, integer(req.query.skip, 0, 'skip'), Math.min(100, integer(req.query.top, 50, 'top')),
+      rowStatus(req.query.status)
+    ))
+  })
+  router.get('/import-batches/:id/unmapped-routing-labels', async (req, res) => {
+    res.json(await imports.unmappedRoutingLabels(req.params.id))
+  })
+  router.post('/import-batches/:id/revalidate', csrf, async (req, res) => {
+    exactObject(req.body ?? {}, [])
+    res.json(await imports.revalidate(req.params.id, importActor(res), evidence(res)))
+  })
+  router.post('/import-batches/:id/activate', csrf, async (req, res) => {
+    exactObject(req.body ?? {}, [])
+    res.json(await imports.activate(req.params.id, importActor(res), evidence(res)))
   })
 
   return router

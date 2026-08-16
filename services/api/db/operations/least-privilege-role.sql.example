@@ -147,6 +147,7 @@ REVOKE UPDATE, DELETE ON TABLE
   egas_AuditEvent,
   egas_WorkflowNote,
   egas_StageReceivedSnapshot,
+  egas_EmployeeAnnualSnapshot,
   egas_StageAction,
   egas_WorkflowSignoff
 FROM :"runtime_role";

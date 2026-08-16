@@ -26,6 +26,8 @@
     "db:migrate": "npm --workspace @egas/api run db:migrate",
     "admin:bootstrap": "npm --workspace @egas/api run admin:bootstrap",
     "data:import": "npm --workspace @egas/api run data:import --",
+    "data:revalidate": "npm --workspace @egas/api run data:revalidate --",
+    "data:activate": "npm --workspace @egas/api run data:activate --",
     "pilot:check": "npm --workspace @egas/api run pilot:check",
     "security:secrets": "npm --workspace @egas/api run security:secrets",
     "security:scan": "npm --workspace @egas/api run security:scan",

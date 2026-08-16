@@ -25,6 +25,10 @@
     "admin:bootstrap": "node dist/modules/admin/bootstrap-cli.js",
     "predata:import": "npm run build",
     "data:import": "node dist/modules/import/cli.js",
+    "predata:revalidate": "npm run build",
+    "data:revalidate": "node dist/modules/import/revalidate-cli.js",
+    "predata:activate": "npm run build",
+    "data:activate": "node dist/modules/import/activate-cli.js",
     "prepilot:check": "npm run build",
     "pilot:check": "node dist/scripts/pilot-check.js",
     "security:secrets": "node scripts/security-secrets.mjs",
@@ -35,6 +39,7 @@
     "argon2": "^0.45.1",
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
+    "jszip": "^3.10.1",
     "pg": "^8.16.3"
   },
   "devDependencies": {

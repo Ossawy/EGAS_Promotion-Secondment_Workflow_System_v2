@@ -30,6 +30,8 @@ PostgreSQL `timestamp without time zone` columns are preserved for compatibility
 
 Migration 001 remains byte-for-byte the verified applied file even though its comments describe the previous CDS authority.
 
+Migration `002_phase2b_annual_snapshot_integrity.sql` is the first Phase 2B additive migration. It adds a partial unique index allowing only one `ACTIVATED` import batch per year and attaches the existing append-only trigger function to `egas_employeeannualsnapshot`. It creates no duplicate data tables and changes no baseline/001 SQL.
+
 ## Least privilege
 
 `services/api/db/operations/least-privilege-role.sql.example` validates the database owner, accepts a `public` owner of either that role or `pg_database_owner`, verifies every public table/view/sequence owner, verifies the runtime role is restricted, and verifies the invoker can manage owner defaults. It uses `ON_ERROR_STOP`, deliberate SQL errors before `BEGIN`, and rollback-on-verification failures; no incompatible `\quit` arguments are used.

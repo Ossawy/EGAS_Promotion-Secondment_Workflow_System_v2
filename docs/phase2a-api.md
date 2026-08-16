@@ -43,6 +43,15 @@ Every `/api/admin/*` route requires a valid session, `mustChangePassword=false`,
 | `GET/POST /api/admin/delegations` | List or create delegations. |
 | `PATCH /api/admin/delegations/:id` | Version-checked update. |
 | `POST /api/admin/delegations/:id/deactivate` | Explicit deactivation. |
+| `GET/POST /api/admin/routing-aliases` | List or explicitly create exact annual-source routing aliases. |
+| `PATCH /api/admin/routing-aliases/:id` | Update/re-enable an alias through a locked, audited operation. |
+| `POST /api/admin/routing-aliases/:id/deactivate` | Explicit alias deactivation. |
+| `GET /api/admin/import-batches` | Bounded/filterable import-batch list. |
+| `GET /api/admin/import-batches/:id` | Safe batch detail with aggregate issue codes. |
+| `GET /api/admin/import-batches/:id/rows` | Bounded validation rows without raw workbook JSON or employee names/IDs. |
+| `GET /api/admin/import-batches/:id/unmapped-routing-labels` | Distinct unresolved labels and counts. |
+| `POST /api/admin/import-batches/:id/revalidate` | Re-run deterministic normalization/routing; never activates. |
+| `POST /api/admin/import-batches/:id/activate` | Explicit zero-blocked full-snapshot activation. |
 
 Account self-deactivation/self-role changes are prohibited and at least one active Manage-Admins account must remain. Authority assignment requires an active routing unit and active `APPROVING_AUTHORITY` account, permits one active primary per unit, and blocks Admin self-configuration. Delegations require eligible parties, ordered dates, and no self-delegation; no unsupported overlap rule is invented.
 
@@ -51,5 +60,6 @@ Account self-deactivation/self-role changes are prohibited and at least one acti
 - `GET /health` — liveness.
 - `GET /ready` — database readiness.
 - Authenticated: `GET /api/reference/routing-units`, `/job-categories`, `/qualification-statuses`.
+- Employee Affairs active role: `GET /api/employee-data/active-snapshot` and `GET /api/employee-data/employees/:personnelNumber`.
 
 No OData or generic persistence routes exist. Workflow/state/snapshot entities remain unexposed pending separately approved phases.

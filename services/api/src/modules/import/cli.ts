@@ -1,4 +1,7 @@
-import { inspectAnnualWorkbook } from './workbook-inspector.js'
+import { randomUUID } from 'node:crypto'
+import { loadConfig } from '../../config/env.ts'
+import { closePool, getPool } from '../../db/pool.ts'
+import { ImportService } from './import-service.ts'
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name)
@@ -8,20 +11,22 @@ function argument(name: string): string | undefined {
 async function main(): Promise<void> {
   const file = argument('--file')
   const yearText = argument('--year')
-  if (!file || !yearText) throw new Error('Usage: npm run data:import -- --file <xlsx> --year <YYYY>')
+  const operator = argument('--operator')
+  if (!file || !yearText || !operator) {
+    throw new Error('Usage: npm run data:import -- --file <xlsx> --year <YYYY> --operator <username>')
+  }
   const year = Number(yearText)
-  if (!Number.isInteger(year) || year < 2000 || year > 2200) throw new Error('Import year must be an integer between 2000 and 2200')
-  const inspection = await inspectAnnualWorkbook(file, year)
-  console.info(JSON.stringify({
-    phase: 'validation-only-foundation', file: inspection.file, year: inspection.year,
-    sheetName: inspection.sheetName, rowCount: inspection.rowCount,
-    detectedHeaders: inspection.headers.normalizedHeaders, unexpectedHeaders: inspection.headers.unexpected,
-    databaseWrites: false,
-    nextStep: 'Implement transactional staging, alias resolution, validation report, and explicit activation in a separately approved phase.'
-  }, null, 2))
+  if (!Number.isInteger(year) || year < 2000 || year > 2200) {
+    throw new Error('Import year must be an integer between 2000 and 2200')
+  }
+  const service = new ImportService(getPool(loadConfig()))
+  const result = await service.stageWorkbook(file, year, operator, {
+    ipAddress: null, userAgent: 'egas-data-import-cli', correlationId: randomUUID()
+  })
+  console.info(JSON.stringify(result, null, 2))
 }
 
 main().catch(error => {
-  console.error(error instanceof Error ? error.message : 'Annual workbook inspection failed')
+  console.error(error instanceof Error ? error.message : 'Annual workbook import failed')
   process.exitCode = 1
-})
+}).finally(closePool)

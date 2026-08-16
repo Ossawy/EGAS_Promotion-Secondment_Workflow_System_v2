@@ -1,36 +1,275 @@
+import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import ExcelJS from 'exceljs'
-import { requiredHeadersForYear, validateHeaders, type HeaderValidationResult } from './header-validation.js'
+import JSZip from 'jszip'
+import { AppError } from '../../shared/errors.ts'
+import {
+  normalizeHeader, requiredHeadersForYear, validateHeaders, type HeaderValidationResult
+} from './header-validation.ts'
 
-const MAX_FILE_BYTES = 25 * 1024 * 1024
-const MAX_ROWS = 25_000
-export interface WorkbookInspection { file: string; year: number; sheetName: string; rowCount: number; headers: HeaderValidationResult }
+export const WORKBOOK_LIMITS = Object.freeze({
+  fileBytes: 25 * 1024 * 1024,
+  expandedBytes: 100 * 1024 * 1024,
+  largestEntryBytes: 50 * 1024 * 1024,
+  zipEntries: 2_000,
+  worksheets: 10,
+  rows: 25_000,
+  columns: 100,
+  cellCharacters: 2_000,
+  headerSearchRows: 20
+})
+
+export type WorkbookCell = string | number | boolean | Date | null
+export type RawJsonValue = string | number | boolean | null
+
+export interface SourceWorkbookRow {
+  sourceRowNumber: number
+  raw: Record<string, RawJsonValue>
+  values: ReadonlyMap<string, WorkbookCell>
+}
+
+export interface WorkbookInspection {
+  file: string
+  basename: string
+  sourceSha256: string
+  year: number
+  sheetName: string
+  headerRowNumber: number
+  rowCount: number
+  headers: HeaderValidationResult
+  rows: SourceWorkbookRow[]
+}
+
+type ZipEntry = { name: string, compressed: number, expanded: number }
+
+function workbookError(message: string, code = 'WORKBOOK_REJECTED'): AppError {
+  return new AppError(400, message, code)
+}
+
+function locateEndOfCentralDirectory(bytes: Buffer): number {
+  const minimum = Math.max(0, bytes.length - 65_557)
+  for (let offset = bytes.length - 22; offset >= minimum; offset -= 1) {
+    if (bytes.readUInt32LE(offset) !== 0x06054b50) continue
+    const commentLength = bytes.readUInt16LE(offset + 20)
+    if (offset + 22 + commentLength === bytes.length) return offset
+  }
+  throw workbookError('Malformed XLSX ZIP directory')
+}
+
+function validateZipDirectory(bytes: Buffer): ZipEntry[] {
+  if (bytes.length < 22 || bytes.readUInt16LE(0) !== 0x4b50) {
+    throw workbookError('File does not have an XLSX ZIP container signature')
+  }
+  const end = locateEndOfCentralDirectory(bytes)
+  const disk = bytes.readUInt16LE(end + 4)
+  const directoryDisk = bytes.readUInt16LE(end + 6)
+  const entriesOnDisk = bytes.readUInt16LE(end + 8)
+  const entryCount = bytes.readUInt16LE(end + 10)
+  const directoryBytes = bytes.readUInt32LE(end + 12)
+  const directoryOffset = bytes.readUInt32LE(end + 16)
+  if (disk !== 0 || directoryDisk !== 0 || entriesOnDisk !== entryCount) {
+    throw workbookError('Multi-disk XLSX containers are not accepted')
+  }
+  if (entryCount === 0xffff || directoryBytes === 0xffffffff || directoryOffset === 0xffffffff) {
+    throw workbookError('ZIP64 XLSX containers are not accepted')
+  }
+  if (entryCount === 0 || entryCount > WORKBOOK_LIMITS.zipEntries) {
+    throw workbookError(`Workbook ZIP entry count exceeds ${WORKBOOK_LIMITS.zipEntries}`)
+  }
+  if (directoryOffset + directoryBytes > end) throw workbookError('Malformed XLSX ZIP directory bounds')
+
+  let offset = directoryOffset
+  let totalExpanded = 0
+  const entries: ZipEntry[] = []
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 46 > end || bytes.readUInt32LE(offset) !== 0x02014b50) {
+      throw workbookError('Malformed XLSX ZIP central-directory entry')
+    }
+    const flags = bytes.readUInt16LE(offset + 8)
+    const method = bytes.readUInt16LE(offset + 10)
+    const compressed = bytes.readUInt32LE(offset + 20)
+    const expanded = bytes.readUInt32LE(offset + 24)
+    const nameLength = bytes.readUInt16LE(offset + 28)
+    const extraLength = bytes.readUInt16LE(offset + 30)
+    const commentLength = bytes.readUInt16LE(offset + 32)
+    const diskStart = bytes.readUInt16LE(offset + 34)
+    const next = offset + 46 + nameLength + extraLength + commentLength
+    if (next > end || nameLength === 0) throw workbookError('Malformed XLSX ZIP entry bounds')
+    if ((flags & 0x0001) !== 0) throw workbookError('Encrypted XLSX entries are not accepted')
+    if (method !== 0 && method !== 8) throw workbookError('Unsupported XLSX compression method')
+    if (diskStart !== 0 || compressed === 0xffffffff || expanded === 0xffffffff) {
+      throw workbookError('ZIP64 or multi-disk XLSX entries are not accepted')
+    }
+    const name = bytes.toString((flags & 0x0800) !== 0 ? 'utf8' : 'latin1', offset + 46, offset + 46 + nameLength)
+    if (name.includes('\0') || name.includes('\\') || name.startsWith('/') || /^[A-Za-z]:/.test(name)
+      || name.split('/').some(segment => segment === '..')) {
+      throw workbookError('Unsafe XLSX entry path')
+    }
+    totalExpanded += expanded
+    if (expanded > WORKBOOK_LIMITS.largestEntryBytes || totalExpanded > WORKBOOK_LIMITS.expandedBytes) {
+      throw workbookError('Workbook expanded content exceeds the configured safety limit')
+    }
+    entries.push({ name, compressed, expanded })
+    offset = next
+  }
+  if (offset !== directoryOffset + directoryBytes) throw workbookError('Malformed XLSX ZIP directory size')
+
+  const names = new Set(entries.map(entry => entry.name))
+  for (const required of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml']) {
+    if (!names.has(required)) throw workbookError('ZIP container is not a valid XLSX workbook')
+  }
+  const dangerous = entries.find(entry => /(^|\/)(vbaproject\.bin|activex|embeddings|externalLinks)(\/|$)/i.test(entry.name)
+    || (/\.bin$/i.test(entry.name) && !/^xl\/printerSettings\/printerSettings\d+\.bin$/i.test(entry.name)))
+  if (dangerous) throw workbookError('Macro, embedded-object, ActiveX, and external-link workbook content is not accepted')
+  return entries
+}
+
+async function validateOoxml(bytes: Buffer): Promise<void> {
+  validateZipDirectory(bytes)
+  let zip: JSZip
+  try {
+    zip = await JSZip.loadAsync(bytes, { checkCRC32: true, createFolders: false })
+  } catch {
+    throw workbookError('Malformed XLSX/OOXML content')
+  }
+  const contentTypes = await zip.file('[Content_Types].xml')?.async('string')
+  if (!contentTypes || /macroEnabled|vbaProject/i.test(contentTypes)) {
+    throw workbookError('Macro-enabled workbooks are not accepted')
+  }
+  const relationshipFiles = Object.values(zip.files).filter(entry => !entry.dir && /\.rels$/i.test(entry.name))
+  for (const relationship of relationshipFiles) {
+    const xml = await relationship.async('string')
+    if (/TargetMode\s*=\s*["']External["']/i.test(xml)) {
+      throw workbookError('External OOXML relationships are not accepted')
+    }
+  }
+}
+
+function cellValue(cell: ExcelJS.Cell): WorkbookCell {
+  const value = cell.value
+  if (value === null || value === undefined) return null
+  if (value instanceof Date) return value
+  if (typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') return value
+  if (typeof value === 'object' && ('formula' in value || 'sharedFormula' in value)) {
+    throw workbookError('Formulas are not accepted in annual import workbooks')
+  }
+  if (typeof value === 'object' && 'richText' in value && Array.isArray(value.richText)) {
+    return value.richText.map(part => part.text).join('')
+  }
+  if (typeof value === 'object' && 'error' in value) throw workbookError('Spreadsheet error cells are not accepted')
+  return cell.text
+}
+
+function jsonValue(value: WorkbookCell): RawJsonValue {
+  return value instanceof Date ? value.toISOString() : value
+}
+
+function characterLength(value: WorkbookCell): number {
+  if (value === null) return 0
+  return value instanceof Date ? value.toISOString().length : String(value).length
+}
+
+type HeaderCandidate = {
+  sheet: ExcelJS.Worksheet
+  rowNumber: number
+  values: unknown[]
+  validation: HeaderValidationResult
+  score: number
+}
 
 export async function inspectAnnualWorkbook(file: string, year: number): Promise<WorkbookInspection> {
   const resolved = path.resolve(file)
-  if (path.extname(resolved).toLowerCase() !== '.xlsx') throw new Error('Only the approved .xlsx workbook format is accepted; .xlsm and .xls are rejected')
+  const basename = path.basename(resolved)
+  if (path.extname(resolved).toLowerCase() !== '.xlsx') {
+    throw workbookError('Only the approved .xlsx workbook format is accepted; .xlsm and .xls are rejected')
+  }
+  if (/[\x00-\x1f\x7f]/u.test(basename) || basename.length > 500) throw workbookError('Workbook filename is not accepted')
   const fileStat = await stat(resolved)
-  if (!fileStat.isFile()) throw new Error('Import path must point to a regular file')
-  if (fileStat.size <= 0 || fileStat.size > MAX_FILE_BYTES) throw new Error(`Workbook size must be between 1 byte and ${MAX_FILE_BYTES} bytes`)
+  if (!fileStat.isFile()) throw workbookError('Import path must point to a regular file')
+  if (fileStat.size <= 0 || fileStat.size > WORKBOOK_LIMITS.fileBytes) {
+    throw workbookError(`Workbook size must be between 1 byte and ${WORKBOOK_LIMITS.fileBytes} bytes`)
+  }
   const bytes = await readFile(resolved)
-  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('File does not have an XLSX/ZIP container signature')
+  const sourceSha256 = createHash('sha256').update(bytes).digest('hex')
+  await validateOoxml(bytes)
+
   const workbook = new ExcelJS.Workbook()
-  await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0])
+  try {
+    await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0])
+  } catch (error) {
+    if (error instanceof AppError) throw error
+    throw workbookError('Malformed XLSX workbook structure')
+  }
+  if (workbook.worksheets.length === 0 || workbook.worksheets.length > WORKBOOK_LIMITS.worksheets) {
+    throw workbookError(`Workbook must contain 1-${WORKBOOK_LIMITS.worksheets} worksheets`)
+  }
+
   const requiredHeaders = requiredHeadersForYear(year)
-  const candidates: WorkbookInspection[] = []
+  const requiredSet = new Set(requiredHeaders)
+  const candidates: HeaderCandidate[] = []
   for (const sheet of workbook.worksheets) {
-    if (sheet.actualRowCount > MAX_ROWS + 20) throw new Error(`Worksheet ${sheet.name} exceeds ${MAX_ROWS} data rows`)
-    for (let rowNumber = 1; rowNumber <= Math.min(20, sheet.actualRowCount); rowNumber += 1) {
+    if (sheet.actualColumnCount > WORKBOOK_LIMITS.columns) {
+      throw workbookError(`A worksheet exceeds ${WORKBOOK_LIMITS.columns} columns`)
+    }
+    if (sheet.actualRowCount > WORKBOOK_LIMITS.rows + WORKBOOK_LIMITS.headerSearchRows) {
+      throw workbookError(`A worksheet exceeds ${WORKBOOK_LIMITS.rows} data rows`)
+    }
+    for (let rowNumber = 1; rowNumber <= Math.min(WORKBOOK_LIMITS.headerSearchRows, sheet.actualRowCount); rowNumber += 1) {
       const values: unknown[] = []
-      sheet.getRow(rowNumber).eachCell({ includeEmpty: true }, (cell, columnNumber) => { values[columnNumber - 1] = cell.text })
-      const headers = validateHeaders(values, requiredHeaders)
-      if (!headers.valid) continue
-      candidates.push({ file: resolved, year, sheetName: sheet.name, rowCount: Math.max(0, sheet.actualRowCount - rowNumber), headers })
-      break
+      sheet.getRow(rowNumber).eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+        values[columnNumber - 1] = cellValue(cell)
+      })
+      const normalized = values.map(normalizeHeader)
+      const score = new Set(normalized.filter(value => requiredSet.has(value))).size
+      if (score >= requiredHeaders.length - 1) {
+        candidates.push({ sheet, rowNumber, values, validation: validateHeaders(values, requiredHeaders), score })
+      }
     }
   }
-  if (!candidates.length) throw new Error('No worksheet has the complete, exact, non-duplicated approved header set')
-  if (candidates.length > 1) throw new Error('More than one worksheet matches the approved header set; operator selection is required')
-  return candidates[0]!
+  if (!candidates.length) throw workbookError('No worksheet resembles the approved annual import header schema')
+  const highestScore = Math.max(...candidates.map(candidate => candidate.score))
+  const likely = candidates.filter(candidate => candidate.score === highestScore)
+  if (likely.length > 1) throw workbookError('More than one worksheet/header row matches the annual import schema')
+  const candidate = likely[0]!
+  if (!candidate.validation.valid) {
+    const issue = candidate.validation.missing.length ? 'required headers are missing' : 'duplicate or ambiguous headers were detected'
+    throw workbookError(`Annual workbook header validation failed: ${issue}`, 'WORKBOOK_HEADERS_INVALID')
+  }
+
+  const headerColumns = new Map<string, number>()
+  candidate.values.forEach((value, index) => {
+    const header = normalizeHeader(value)
+    if (header) headerColumns.set(header, index + 1)
+  })
+  const rows: SourceWorkbookRow[] = []
+  for (let rowNumber = candidate.rowNumber + 1; rowNumber <= candidate.sheet.actualRowCount; rowNumber += 1) {
+    const source = candidate.sheet.getRow(rowNumber)
+    const values = new Map<string, WorkbookCell>()
+    const raw: Record<string, RawJsonValue> = {}
+    for (const [header, column] of headerColumns) {
+      const cell = source.getCell(column)
+      const parsed = cellValue(cell)
+      const value = typeof parsed === 'number' && header !== 'تاريخ المؤهل الاصلي' ? (cell.text || parsed) : parsed
+      if (characterLength(value) > WORKBOOK_LIMITS.cellCharacters) {
+        throw workbookError(`A workbook cell exceeds ${WORKBOOK_LIMITS.cellCharacters} characters`)
+      }
+      values.set(header, value)
+      raw[header] = jsonValue(value)
+    }
+    const hasImportValue = requiredHeaders.some(header => {
+      const value = values.get(header)
+      return value !== null && String(value).trim() !== ''
+    })
+    if (!hasImportValue) continue
+    rows.push({ sourceRowNumber: rowNumber, raw, values })
+    if (rows.length > WORKBOOK_LIMITS.rows) throw workbookError(`Workbook exceeds ${WORKBOOK_LIMITS.rows} data rows`)
+  }
+  if (rows.length === 0) throw workbookError('Annual workbook contains no data rows')
+  return {
+    file: resolved, basename, sourceSha256, year, sheetName: candidate.sheet.name,
+    headerRowNumber: candidate.rowNumber, rowCount: rows.length,
+    headers: candidate.validation, rows
+  }
 }

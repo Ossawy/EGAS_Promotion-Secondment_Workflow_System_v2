@@ -1,6 +1,6 @@
 # EGAS Promotion & Secondment Workflow System
 
-The implemented Phase 1/2A backend is a plain Node.js/TypeScript modular monolith:
+The implemented Phase 1/2A/2B backend is a plain Node.js/TypeScript modular monolith:
 
 ```text
 React + TypeScript (future client)
@@ -22,9 +22,11 @@ The original BRD and authoritative v2.0 PDF retain SAP/Fiori/direct-HCM referenc
 - Privileged first-Admin bootstrap and last-active-Manage-Admins/self-change protections.
 - Transactional security events for authentication and Admin/authority/delegation mutations.
 - Preserved 31 `egas_*` tables plus historical `cds_model` and `cds_outbox_messages` (33 public tables), physical names, data, migration ledger, constraints, triggers, and reference rows. The historical CAP tables are not accessed.
-- A validation-only annual `.xlsx` inspector. It performs no database writes.
+- Controlled annual `.xlsx` inspection, raw staging, normalization, exact routing/alias validation, aggregate batch reporting, revalidation, and explicit transactional activation.
+- Stable employee identities, immutable yearly snapshots, and active-snapshot Employee Affairs lookup.
+- Admin-only routing-alias and import-batch APIs with CSRF/Origin enforcement and aggregate security evidence.
 
-Annual activation, employee lookup, P1-P5/S1-S5 workflow, signatures, PDFs, workflow notifications, and React screens remain intentionally deferred.
+P1-P5/S1-S5 workflow, signatures, PDFs, workflow notifications, and React screens remain intentionally deferred.
 
 ## Configuration
 
@@ -50,7 +52,9 @@ Production requires HTTPS, `NODE_ENV=production`, `EGAS_REQUIRE_SECURE_COOKIE=tr
    Substitute the actual object owner. PostgreSQL's `pg_database_owner` ownership of `public` is valid when the supplied schema owner owns the database. The script verifies every public table/sequence owner, is transactional/fail-closed, grants runtime DML/sequence use and owner-scoped defaults, preserves append-only restrictions, denies database/schema `CREATE` and `TEMPORARY`, and revokes historical outbox access.
 5. Switch the private environment to `egas_app` credentials.
 6. On a fresh database only, set `EGAS_BOOTSTRAP_ADMIN_*` and run `npm run admin:bootstrap`. It refuses if a privileged Admin already exists and always closes the pool before exiting.
-7. Run `npm run pilot:check`, then `npm run dev`.
+7. Stage the approved annual workbook with `npm run data:import -- --file <path> --year 2026 --operator <admin-username>`. Resolve only approved unmapped labels through the Admin alias API, then revalidate. Staging never activates data.
+8. When and only when the full batch has zero blocked rows and has operational approval, explicitly run `npm run data:activate -- --batch <UUID> --operator <admin-username>`.
+9. Run `npm run pilot:check`, then `npm run dev`.
 
 Existing installations must not recreate the database or run the frozen logical SQL. The migration runner recognizes the existing CAP-era physical schema as the immutable baseline, verifies all expected tables, preserves migration 001/checksum history, and applies only missing versioned SQL. Fresh empty installations use the repository baseline and the same versioned migrations.
 
@@ -65,13 +69,15 @@ Existing installations must not recreate the database or run the frozen logical 
 | `npm run typecheck` | Type-check without emitting files. |
 | `npm run db:migrate` | Apply the preserved baseline when empty and missing versioned migrations. |
 | `npm run admin:bootstrap` | Transactionally create the first privileged Admin. |
-| `npm run data:import -- --file <xlsx> --year <YYYY>` | Validate workbook safety/headers without writes. |
+| `npm run data:import -- --file <xlsx> --year <YYYY> --operator <username>` | Securely inspect, stage, normalize, route, and validate without activation. |
+| `npm run data:revalidate -- --batch <UUID> --operator <username>` | Deterministically revalidate an unactivated staged batch after approved alias changes. |
+| `npm run data:activate -- --batch <UUID> --operator <username>` | Explicitly and transactionally activate a zero-blocked full annual snapshot. |
 | `npm run pilot:check` | Check runtime role, routing units, Admin, authority coverage, and snapshot. |
 | `npm run security:check` | Secret scan, dependency audit, typecheck, and tests. |
 
 `pilot:check` is expected to exit non-zero until all 22 active routing units have active primary-authority coverage and an annual employee snapshot is activated. Do not invent mappings or synthetic employee data to make it green.
 
-See [docs/phase2a-api.md](docs/phase2a-api.md), [docs/postgresql-implementation.md](docs/postgresql-implementation.md), [docs/cap-to-node-parity.md](docs/cap-to-node-parity.md), and [PILOT_SETUP.md](PILOT_SETUP.md).
+See [docs/phase2a-api.md](docs/phase2a-api.md), [docs/phase2b-data-routing.md](docs/phase2b-data-routing.md), [docs/postgresql-implementation.md](docs/postgresql-implementation.md), [docs/cap-to-node-parity.md](docs/cap-to-node-parity.md), and [PILOT_SETUP.md](PILOT_SETUP.md).
 
 ## Security/repository policy
 

@@ -1,13 +1,16 @@
-export const BASE_REQUIRED_HEADERS = [
-  'رقم الموظف',
-  'اسم الموظف',
-  'المجموعة الفرعية',
-  'النيابة / المساعد',
-  'الوظيفة',
-  'المؤسسة التعليمية-المؤهل الاصلي',
-  'الشهادة-المؤهل الاصلي',
-  'تاريخ المؤهل الاصلي'
-] as const
+export const IMPORT_HEADERS = {
+  personnelNumber: 'رقم الموظف',
+  employeeName: 'اسم الموظف',
+  subgroup: 'المجموعة الفرعية',
+  routingUnit: 'النيابة /المساعد',
+  currentJobTitle: 'الوظيفة',
+  qualificationSource1: 'المؤسسة التعليمية-المؤهل الاصلي',
+  qualificationSource2: 'الشهادة-المؤهل الاصلي',
+  qualificationDate: 'تاريخ المؤهل الاصلي'
+} as const
+
+export type ImportField = keyof typeof IMPORT_HEADERS | 'performanceRating'
+export const BASE_REQUIRED_HEADERS = Object.values(IMPORT_HEADERS)
 
 export interface HeaderValidationResult {
   valid: boolean
@@ -17,15 +20,29 @@ export interface HeaderValidationResult {
   unexpected: string[]
 }
 
-export function requiredHeadersForYear(year: number): string[] {
+export function performanceHeaderForYear(year: number): string {
   const configured = process.env.EGAS_IMPORT_PERFORMANCE_HEADER?.trim()
-  if (configured) return [...BASE_REQUIRED_HEADERS, configured]
-  if (year === 2026) return [...BASE_REQUIRED_HEADERS, 'تقرير كفاية2026']
-  throw new Error('The approved performance-report header is not defined for this year. Set EGAS_IMPORT_PERFORMANCE_HEADER to the exact EGAS-approved header name.')
+  if (configured) return configured
+  if (year === 2026) return 'تقرير كفاية 2026'
+  throw new Error(
+    'The approved performance-report header is not defined for this year. Set EGAS_IMPORT_PERFORMANCE_HEADER to the exact EGAS-approved header name.'
+  )
+}
+
+export function requiredHeadersForYear(year: number): string[] {
+  return [...BASE_REQUIRED_HEADERS, performanceHeaderForYear(year)]
+}
+
+export function headerForField(field: ImportField, year: number): string {
+  return field === 'performanceRating' ? performanceHeaderForYear(year) : IMPORT_HEADERS[field]
+}
+
+export function normalizeHeader(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 export function validateHeaders(headers: readonly unknown[], requiredHeaders: readonly string[]): HeaderValidationResult {
-  const normalizedHeaders = headers.map(value => typeof value === 'string' ? value.trim() : '').filter(Boolean)
+  const normalizedHeaders = headers.map(normalizeHeader).filter(Boolean)
   const counts = new Map<string, number>()
   for (const header of normalizedHeaders) counts.set(header, (counts.get(header) ?? 0) + 1)
   const duplicates = [...counts].filter(([, count]) => count > 1).map(([header]) => header).sort()

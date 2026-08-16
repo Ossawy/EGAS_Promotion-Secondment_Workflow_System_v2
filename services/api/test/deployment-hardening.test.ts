@@ -16,7 +16,7 @@ describe('least-privilege deployment SQL', () => {
 
   it('preserves append-only restrictions and denies the historical outbox', async () => {
     const sql = await readFile(new URL('../db/operations/least-privilege-role.sql.example', import.meta.url), 'utf8')
-    for (const table of ['egas_AuditEvent','egas_WorkflowNote','egas_StageReceivedSnapshot','egas_StageAction','egas_WorkflowSignoff']) {
+    for (const table of ['egas_AuditEvent','egas_WorkflowNote','egas_StageReceivedSnapshot','egas_EmployeeAnnualSnapshot','egas_StageAction','egas_WorkflowSignoff']) {
       expect(sql).toContain(table)
     }
     expect(sql).toContain('REVOKE INSERT, UPDATE, DELETE ON TABLE egas_SchemaMigration')

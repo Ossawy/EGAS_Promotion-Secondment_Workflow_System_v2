@@ -21,12 +21,24 @@ export const testConfig: AppConfig = {
   }
 }
 
+export function assertTestDatabaseIsIsolated(config: AppConfig): void {
+  if (config.database.database.trim().toLowerCase() === 'egas_workflow_dev') {
+    throw new Error('Automated tests refuse to use egas_workflow_dev')
+  }
+}
+
 export async function isolatedPool(): Promise<Pool> {
+  assertTestDatabaseIsIsolated(testConfig)
   const database = newDb({ autoCreateForeignKeyIndices: true })
   database.public.registerFunction({ name: 'hashtext', args: [DataType.text], returns: DataType.integer, implementation: () => 1 })
   database.public.registerFunction({ name: 'pg_advisory_xact_lock', args: [DataType.integer], returns: DataType.integer, implementation: () => 1 })
   const baseline = await readFile(new URL('../../src/db/baseline/000_existing_cap_schema.sql', import.meta.url), 'utf8')
   database.public.none(baseline)
   const adapter = database.adapters.createPg()
-  return new adapter.Pool() as unknown as Pool
+  const pool = new adapter.Pool() as unknown as Pool
+  await pool.query(
+    `INSERT INTO egas_schemamigration (version,sha256,appliedat)
+     VALUES ('002_phase2b_annual_snapshot_integrity',$1,CURRENT_TIMESTAMP)`, ['0'.repeat(64)]
+  )
+  return pool
 }
