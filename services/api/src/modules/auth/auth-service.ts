@@ -27,6 +27,7 @@ type AccountRow = {
 }
 
 const GENERIC_LOGIN_MESSAGE = 'Invalid username or password'
+type LoginFailureReason = 'UNKNOWN_OR_INVALID' | 'ACCOUNT_DISABLED' | 'ACCOUNT_LOCKED' | 'INVALID_CREDENTIAL'
 
 function username(value: unknown): string {
   if (typeof value !== 'string') return ''
@@ -39,6 +40,26 @@ function accountColumns(): string {
     jobtitle AS "jobTitle", passwordhash AS "passwordHash",
     mustchangepassword AS "mustChangePassword", isactive AS "isActive",
     failedlogincount AS "failedLoginCount", lockeduntil AS "lockedUntil", version`
+}
+
+function authenticationFailureReason(
+  account: AccountRow | undefined,
+  locked: boolean,
+  passwordMatches: boolean
+): LoginFailureReason | null {
+  if (!account) return 'UNKNOWN_OR_INVALID'
+  if (!account.isActive) return 'ACCOUNT_DISABLED'
+  if (locked) return 'ACCOUNT_LOCKED'
+  return passwordMatches ? null : 'INVALID_CREDENTIAL'
+}
+
+function soleRole(roles: readonly SafeRole[]): Role | null {
+  return roles.length === 1 ? roles[0]?.role ?? null : null
+}
+
+function roleAfterPasswordChange(previous: string | null, roles: readonly SafeRole[]): Role | null {
+  if (previous !== null && isRole(previous) && roles.some(role => role.role === previous)) return previous
+  return soleRole(roles)
 }
 
 export class AuthService {
@@ -186,78 +207,107 @@ export class AuthService {
     )
   }
 
+  private async recordFailedLogin(
+    db: Queryable,
+    account: AccountRow | undefined,
+    locked: boolean,
+    passwordMatches: boolean,
+    fingerprint: string,
+    evidence: RequestEvidence,
+    reason: LoginFailureReason
+  ): Promise<void> {
+    await this.recordAttempt(db, fingerprint, evidence, false, reason)
+    if (account?.isActive && !locked && !passwordMatches) {
+      const failures = await this.identifierFailures(db, fingerprint)
+      const shouldLock = failures >= this.config.auth.loginFailureLimit
+      const updated = await db.query(
+        `UPDATE egas_useraccount
+            SET failedlogincount = failedlogincount + 1,
+                lockeduntil = CASE WHEN $3 THEN CURRENT_TIMESTAMP + $4::interval ELSE lockeduntil END,
+                updatedat = CURRENT_TIMESTAMP, version = version + 1
+          WHERE id = $1 AND version = $2`,
+        [account.id, account.version, shouldLock, `${this.config.auth.lockoutMinutes} minutes`]
+      )
+      if (shouldLock && updated.rowCount === 1) {
+        await recordSecurityEvent(db, {
+          actorUserId: account.id, eventType: 'ACCOUNT_LOCKED', ...evidence,
+          details: { reason: 'FAILED_LOGIN_THRESHOLD' }
+        })
+      }
+    }
+    await recordSecurityEvent(db, {
+      eventType: 'LOGIN_FAILED', ...evidence,
+      details: { identifierFingerprint: fingerprint, reason }
+    })
+  }
+
+  private async recordSuccessfulLogin(
+    db: Queryable,
+    account: AccountRow,
+    activeRole: Role | null,
+    fingerprint: string,
+    evidence: RequestEvidence
+  ): Promise<IssuedSession> {
+    const updated = await db.query(
+      `UPDATE egas_useraccount SET failedlogincount=0, lockeduntil=NULL,
+          updatedat=CURRENT_TIMESTAMP, version=version+1 WHERE id=$1 AND version=$2`,
+      [account.id, account.version]
+    )
+    if (updated.rowCount !== 1) throw new AppError(503, 'Authentication temporarily unavailable', 'AUTH_RETRY')
+    account.failedLoginCount = 0
+    account.lockedUntil = null
+    account.version += 1
+    await this.recordAttempt(db, fingerprint, evidence, true, null)
+    const issued = await this.issueSession(db, account, activeRole, evidence)
+    await recordSecurityEvent(db, {
+      actorUserId: account.id, eventType: 'LOGIN_SUCCEEDED', ...evidence,
+      details: { sessionId: issued.sessionId, activeRole }
+    })
+    return issued
+  }
+
+  private async loginTransaction(
+    db: Queryable,
+    normalized: string,
+    suppliedPassword: string,
+    fingerprint: string,
+    evidence: RequestEvidence
+  ): Promise<IssuedSession | null> {
+    await this.lockAttempts(db)
+    const recent = await this.recentFailures(db, fingerprint, evidence.ipAddress)
+    if (recent >= this.config.auth.loginFailureLimit) {
+      throw new AppError(429, 'Authentication temporarily unavailable', 'AUTH_RATE_LIMITED')
+    }
+    const account = normalized ? await this.account(db, normalized) : undefined
+    const locked = Boolean(account?.lockedUntil && new Date(account.lockedUntil).getTime() > Date.now())
+    const passwordMatches = await this.provider.verifyPassword(
+      account?.passwordHash ?? await this.dummyHash(), suppliedPassword
+    )
+    const failureReason = authenticationFailureReason(account, locked, passwordMatches)
+    if (failureReason) {
+      await this.recordFailedLogin(db, account, locked, passwordMatches, fingerprint, evidence, failureReason)
+      return null
+    }
+    if (!account) return null
+    const roles = await this.roles(db, account.id)
+    if (roles.length === 0) {
+      await this.recordAttempt(db, fingerprint, evidence, false, 'NO_ACTIVE_ROLE')
+      await recordSecurityEvent(db, {
+        actorUserId: account.id, eventType: 'LOGIN_FAILED', ...evidence,
+        details: { identifierFingerprint: fingerprint, reason: 'NO_ACTIVE_ROLE' }
+      })
+      return null
+    }
+    return await this.recordSuccessfulLogin(db, account, soleRole(roles), fingerprint, evidence)
+  }
+
   async login(usernameValue: unknown, passwordValue: unknown, evidence: RequestEvidence): Promise<IssuedSession> {
     const normalized = username(usernameValue)
     const suppliedPassword = typeof passwordValue === 'string' ? passwordValue : ''
     const fingerprint = fingerprintIdentifier(normalized || 'invalid-identifier', this.config)
     return await this.serialize(async () => {
-      const outcome = await withTransaction(this.pool, async db => {
-        await this.lockAttempts(db)
-        const recent = await this.recentFailures(db, fingerprint, evidence.ipAddress)
-        if (recent >= this.config.auth.loginFailureLimit) {
-          throw new AppError(429, 'Authentication temporarily unavailable', 'AUTH_RATE_LIMITED')
-        }
-        const account = normalized ? await this.account(db, normalized) : undefined
-        const locked = Boolean(account?.lockedUntil && new Date(account.lockedUntil).getTime() > Date.now())
-        const passwordMatches = await this.provider.verifyPassword(
-          account?.passwordHash ?? await this.dummyHash(), suppliedPassword
-        )
-        if (!account || !account.isActive || locked || !passwordMatches) {
-          const reason = !account ? 'UNKNOWN_OR_INVALID'
-            : !account.isActive ? 'ACCOUNT_DISABLED'
-              : locked ? 'ACCOUNT_LOCKED' : 'INVALID_CREDENTIAL'
-          await this.recordAttempt(db, fingerprint, evidence, false, reason)
-          if (account?.isActive && !locked && !passwordMatches) {
-            const failures = await this.identifierFailures(db, fingerprint)
-            const shouldLock = failures >= this.config.auth.loginFailureLimit
-            const updated = await db.query(
-              `UPDATE egas_useraccount
-                  SET failedlogincount = failedlogincount + 1,
-                      lockeduntil = CASE WHEN $3 THEN CURRENT_TIMESTAMP + $4::interval ELSE lockeduntil END,
-                      updatedat = CURRENT_TIMESTAMP, version = version + 1
-                WHERE id = $1 AND version = $2`,
-              [account.id, account.version, shouldLock, `${this.config.auth.lockoutMinutes} minutes`]
-            )
-            if (shouldLock && updated.rowCount === 1) {
-              await recordSecurityEvent(db, {
-                actorUserId: account.id, eventType: 'ACCOUNT_LOCKED', ...evidence,
-                details: { reason: 'FAILED_LOGIN_THRESHOLD' }
-              })
-            }
-          }
-          await recordSecurityEvent(db, {
-            eventType: 'LOGIN_FAILED', ...evidence,
-            details: { identifierFingerprint: fingerprint, reason }
-          })
-          return null
-        }
-        const roles = await this.roles(db, account.id)
-        if (roles.length === 0) {
-          await this.recordAttempt(db, fingerprint, evidence, false, 'NO_ACTIVE_ROLE')
-          await recordSecurityEvent(db, {
-            actorUserId: account.id, eventType: 'LOGIN_FAILED', ...evidence,
-            details: { identifierFingerprint: fingerprint, reason: 'NO_ACTIVE_ROLE' }
-          })
-          return null
-        }
-        const activeRole = roles.length === 1 ? roles[0]?.role ?? null : null
-        const updated = await db.query(
-          `UPDATE egas_useraccount SET failedlogincount=0, lockeduntil=NULL,
-              updatedat=CURRENT_TIMESTAMP, version=version+1 WHERE id=$1 AND version=$2`,
-          [account.id, account.version]
-        )
-        if (updated.rowCount !== 1) throw new AppError(503, 'Authentication temporarily unavailable', 'AUTH_RETRY')
-        account.failedLoginCount = 0
-        account.lockedUntil = null
-        account.version += 1
-        await this.recordAttempt(db, fingerprint, evidence, true, null)
-        const issued = await this.issueSession(db, account, activeRole, evidence)
-        await recordSecurityEvent(db, {
-          actorUserId: account.id, eventType: 'LOGIN_SUCCEEDED', ...evidence,
-          details: { sessionId: issued.sessionId, activeRole }
-        })
-        return issued
-      })
+      const outcome = await withTransaction(this.pool, async db =>
+        await this.loginTransaction(db, normalized, suppliedPassword, fingerprint, evidence))
       if (!outcome) throw new AppError(401, GENERIC_LOGIN_MESSAGE, 'AUTHENTICATION_FAILED')
       return outcome
     })
@@ -355,8 +405,7 @@ export class AuthService {
         )
         const roles = await this.roles(db, userId)
         const previous = session.rows[0].activeRole
-        const activeRole = previous && isRole(previous) && roles.some(role => role.role === previous)
-          ? previous : roles.length === 1 ? roles[0]?.role ?? null : null
+        const activeRole = roleAfterPasswordChange(previous, roles)
         const issued = await this.issueSession(db, account, activeRole, evidence, sessionId)
         await this.recordAttempt(db, fingerprint, evidence, true, null)
         await recordSecurityEvent(db, {

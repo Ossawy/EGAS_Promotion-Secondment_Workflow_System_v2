@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { githubTokenPattern } from './security-patterns.mjs'
 
 const repositoryRoot = path.resolve(process.cwd(), '../..')
 const excludedNames = new Set(['.git', 'node_modules', 'dist', 'coverage', 'tmp'])
@@ -8,7 +9,7 @@ const patterns = [
   { name: 'private key', regex: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
   { name: 'credentialed PostgreSQL URL', regex: /postgres(?:ql)?:\/\/[^\s:@]+:[^\s@<>]+@/i },
   { name: 'AWS access key', regex: /AKIA[0-9A-Z]{16}/ },
-  { name: 'GitHub token', regex: /gh[pousr]_[A-Za-z0-9_]{30,}/ }
+  { name: 'GitHub token', regex: githubTokenPattern }
 ]
 const findings = []
 async function walk(directory) {

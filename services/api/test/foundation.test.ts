@@ -39,11 +39,23 @@ describe('plain Node foundation', () => {
     expect(lock).not.toMatch(/node_modules\/(?:@sap\/cds|@cap-js\/)/)
   })
 
+  it('keeps Sonar exclusions limited to authoritative and immutable artifacts', async () => {
+    const sonar = await readFile(new URL('../../../sonar-project.properties', import.meta.url), 'utf8')
+    expect(sonar).toContain('docs/requirements/**')
+    expect(sonar).toContain('services/api/src/db/baseline/000_existing_cap_schema.sql')
+    expect(sonar).toContain('services/api/src/db/migrations/001_postgres_integrity.sql')
+    expect(sonar).not.toMatch(/\*\*\/\*\.sql|services\/api\/src\/\*\*|services\/api\/test\/\*\*/)
+  })
+
   it('keeps annual workbook normalization exact and validation-only', () => {
     expect(validateHeaders([' رقم الموظف ', 'اسم الموظف'], ['رقم الموظف', 'اسم الموظف'])).toMatchObject({ valid: true, missing: [], duplicates: [] })
     expect(validateHeaders(['رقم الموظف', 'رقم الموظف'], ['رقم الموظف', 'اسم الموظف'])).toMatchObject({ valid: false, missing: ['اسم الموظف'], duplicates: ['رقم الموظف'] })
     expect(normalizeNullableSentinel(' 10 ')).toBeNull()
     expect(normalizeNullableSentinel('جيد')).toBe('جيد')
+    expect(normalizeNullableSentinel(42)).toBe('42')
+    expect(normalizeNullableSentinel(true)).toBe('true')
+    expect(normalizeNullableSentinel(new Date('2026-01-02T00:00:00.000Z'))).toBe('2026-01-02T00:00:00.000Z')
+    expect(() => normalizeNullableSentinel({ value: 'جيد' })).toThrow('Unsupported workbook value type')
   })
 
   it('counts only active accounts with an active ADMIN Manage-Admins role', async () => {

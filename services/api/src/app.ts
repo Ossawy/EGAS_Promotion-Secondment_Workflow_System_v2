@@ -10,6 +10,8 @@ import { LocalAuthenticationProvider } from './modules/auth/local-authentication
 import { healthRouter } from './modules/health/routes.ts'
 import { referenceRouter } from './modules/reference/routes.ts'
 import { employeeDataRouter } from './modules/employee/routes.ts'
+import { notificationRouter } from './modules/notifications/routes.ts'
+import { workflowRouter } from './modules/workflow/routes.ts'
 
 export function createApp(pool: Pool, config: AppConfig): Express {
   const app = express()
@@ -28,6 +30,8 @@ export function createApp(pool: Pool, config: AppConfig): Express {
   app.use('/api/admin', adminRouter(pool, config))
   app.use('/api/reference', referenceRouter(pool))
   app.use('/api/employee-data', employeeDataRouter(pool))
+  app.use('/api/workflow', workflowRouter(pool, config))
+  app.use('/api/notifications', notificationRouter(pool, config))
   app.use(notFound)
   app.use(errorHandler)
   return app

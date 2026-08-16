@@ -1,7 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import ExcelJS from 'exceljs'
+import JSZip from 'jszip'
 import { requiredHeadersForYear } from '../../src/modules/import/header-validation.js'
 
 const temporaryDirectories: string[] = []
@@ -30,6 +31,7 @@ export async function syntheticWorkbook(options: {
   formulaHeader?: string
   extraColumns?: number
   secondMatchingSheet?: boolean
+  forbiddenZipEntry?: string
 } = {}): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), 'egas-phase2b-'))
   temporaryDirectories.push(directory)
@@ -55,6 +57,11 @@ export async function syntheticWorkbook(options: {
     second.addRow(headers.map(header => header === 'م' ? 1 : syntheticRow()[header] ?? null))
   }
   await workbook.xlsx.writeFile(file)
+  if (options.forbiddenZipEntry) {
+    const zip = await JSZip.loadAsync(await readFile(file))
+    zip.file(options.forbiddenZipEntry, 'synthetic forbidden content')
+    await writeFile(file, await zip.generateAsync({ type: 'nodebuffer' }))
+  }
   return file
 }
 

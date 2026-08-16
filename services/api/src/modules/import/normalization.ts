@@ -3,6 +3,10 @@ import type { SourceWorkbookRow, WorkbookCell } from './workbook-inspector.ts'
 
 export type ValidationStatus = 'VALID' | 'WARNING' | 'BLOCKED'
 export type ValidationSeverity = 'WARNING' | 'BLOCKING'
+export type NormalizedQualificationDate =
+  | { kind: 'VALID', value: string }
+  | { kind: 'EMPTY', value: null }
+  | { kind: 'INVALID' }
 
 export interface ValidationMessage {
   code: string
@@ -33,6 +37,12 @@ export interface NormalizedStagingRow {
   mappedRoutingUnitId: string | null
   validationStatus: ValidationStatus
   validationMessages: ValidationMessage[]
+}
+
+const APPROVED_PERFORMANCE_RATINGS = new Set(['ممتاز', 'جيد جدا', 'جيد'])
+
+function approvedPerformanceRating(value: string | null): string | null {
+  return value !== null && APPROVED_PERFORMANCE_RATINGS.has(value) ? value : null
 }
 
 function text(value: WorkbookCell | undefined): string | null {
@@ -79,20 +89,30 @@ function calendarDate(year: number, month: number, day: number): string | null {
   return parsed.toISOString().slice(0, 10)
 }
 
-export function normalizeQualificationDate(value: WorkbookCell | undefined): string | null | 'INVALID' {
-  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? 'INVALID' : value.toISOString().slice(0, 10)
+function validDate(value: string): NormalizedQualificationDate {
+  return { kind: 'VALID', value }
+}
+
+function parsedDate(value: string | null): NormalizedQualificationDate {
+  return value === null ? { kind: 'INVALID' } : validDate(value)
+}
+
+export function normalizeQualificationDate(value: WorkbookCell | undefined): NormalizedQualificationDate {
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
+    return { kind: 'EMPTY', value: null }
   }
-  if (typeof value === 'number') return excelSerialDate(value) ?? 'INVALID'
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? { kind: 'INVALID' } : validDate(value.toISOString().slice(0, 10))
+  }
+  if (typeof value === 'number') return parsedDate(excelSerialDate(value))
   const normalized = String(value).trim()
   if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
     const [year, month, day] = normalized.split('-').map(Number) as [number, number, number]
-    return calendarDate(year, month, day) ?? 'INVALID'
+    return parsedDate(calendarDate(year, month, day))
   }
-  const dayFirst = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/.exec(normalized)
-  if (dayFirst) return calendarDate(Number(dayFirst[3]), Number(dayFirst[2]), Number(dayFirst[1])) ?? 'INVALID'
-  return 'INVALID'
+  const dayFirst = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(normalized)
+  if (dayFirst) return parsedDate(calendarDate(Number(dayFirst[3]), Number(dayFirst[2]), Number(dayFirst[1])))
+  return { kind: 'INVALID' }
 }
 
 function status(messages: readonly ValidationMessage[]): ValidationStatus {
@@ -115,7 +135,7 @@ export function normalizeStagingRow(source: SourceWorkbookRow, year: number, rou
   const qualificationSource2 = bounded(text(read('qualificationSource2')), 500, 'qualificationSource2', messages)
 
   const performanceRating = bounded(nullableSentinel(read('performanceRating')), 40, 'performanceRating', messages)
-  if (performanceRating !== null && !['ممتاز', 'جيد جدا', 'جيد'].includes(performanceRating)) {
+  if (performanceRating !== null && !APPROVED_PERFORMANCE_RATINGS.has(performanceRating)) {
     issue(messages, 'PERFORMANCE_UNKNOWN', 'BLOCKING', 'performanceRating', 'Performance rating is not an approved value')
   } else if (performanceRating === 'جيد') {
     issue(messages, 'PERFORMANCE_GOOD_WARNING', 'WARNING', 'performanceRating', 'Performance rating requires a workflow warning')
@@ -124,8 +144,8 @@ export function normalizeStagingRow(source: SourceWorkbookRow, year: number, rou
   }
 
   const date = normalizeQualificationDate(read('qualificationDate'))
-  const qualificationDate = date === 'INVALID' ? null : date
-  if (date === 'INVALID') {
+  const qualificationDate = date.kind === 'VALID' ? date.value : null
+  if (date.kind === 'INVALID') {
     issue(messages, 'QUALIFICATION_DATE_INVALID', 'BLOCKING', 'qualificationDate', 'Qualification date is invalid')
   }
 
@@ -146,8 +166,7 @@ export function normalizeStagingRow(source: SourceWorkbookRow, year: number, rou
     subgroup,
     sourceRoutingUnit,
     currentJobTitle,
-    performanceRating: performanceRating !== null && ['ممتاز', 'جيد جدا', 'جيد'].includes(performanceRating)
-      ? performanceRating : null,
+    performanceRating: approvedPerformanceRating(performanceRating),
     qualificationSource1,
     qualificationSource2,
     qualificationDate,

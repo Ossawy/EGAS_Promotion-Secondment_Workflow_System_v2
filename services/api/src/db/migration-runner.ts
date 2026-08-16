@@ -6,8 +6,28 @@ import type { Pool, PoolClient } from 'pg'
 export type Migration = { version: string, sha256: string, sql: string }
 export type AppliedMigration = { version: string, sha256: string }
 
+export function isMigrationFilename(file: string): boolean {
+  if (!file.toLowerCase().endsWith('.sql')) return false
+  const versionLength = file.length - '.sql'.length
+  if (versionLength === 0) return false
+  let leadingDigits = 0
+  for (let index = 0; index < versionLength; index += 1) {
+    const code = file.charCodeAt(index)
+    const digit = code >= 48 && code <= 57
+    if (index === leadingDigits && digit) {
+      leadingDigits += 1
+      continue
+    }
+    const letter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+    if (leadingDigits === 0 || (!digit && !letter && code !== 45 && code !== 95)) return false
+  }
+  return leadingDigits > 0
+}
+
 export async function loadMigrations(directory = new URL('./migrations/', import.meta.url)): Promise<Migration[]> {
-  const files = (await readdir(directory)).filter(file => /^\d+.*\.sql$/i.test(file)).sort()
+  const files = (await readdir(directory))
+    .filter(isMigrationFilename)
+    .sort((left, right) => left.localeCompare(right))
   return await Promise.all(files.map(async file => {
     const sql = await readFile(new URL(file, directory), 'utf8')
     return {

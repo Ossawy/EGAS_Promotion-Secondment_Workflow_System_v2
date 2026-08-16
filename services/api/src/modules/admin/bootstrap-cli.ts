@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { loadConfig } from '../../config/env.js'
 import { closePool, getPool } from '../../db/pool.js'
 import { withTransaction } from '../../db/transaction.js'
+import { runCli } from '../../shared/run-cli.js'
 
 export type BootstrapInput = {
   username: string
@@ -94,12 +95,5 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  main()
-    .catch(error => {
-      console.error(error instanceof Error ? error.message : 'Admin bootstrap failed')
-      process.exitCode = 1
-    })
-    .finally(async () => {
-      await closePool()
-    })
+  await runCli(main, closePool, 'Admin bootstrap failed')
 }

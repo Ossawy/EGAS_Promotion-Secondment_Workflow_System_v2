@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { loadConfig } from '../../config/env.ts'
 import { closePool, getPool } from '../../db/pool.ts'
+import { runCli } from '../../shared/run-cli.ts'
 import { ImportService } from './import-service.ts'
 
 function argument(name: string): string | undefined {
@@ -20,7 +21,4 @@ async function main(): Promise<void> {
   console.info(JSON.stringify(result, null, 2))
 }
 
-main().catch(error => {
-  console.error(error instanceof Error ? error.message : 'Annual import revalidation failed')
-  process.exitCode = 1
-}).finally(closePool)
+await runCli(main, closePool, 'Annual import revalidation failed')

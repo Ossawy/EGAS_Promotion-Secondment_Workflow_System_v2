@@ -1,6 +1,6 @@
 # SAP CAP to plain Node.js/Express parity ledger
 
-This ledger was created before CAP removal at checkpoint `8be6b3f`. It is both the Stage 1 inventory and the mandatory deletion gate. The migration is a framework replacement: existing PostgreSQL names, rows, constraints, triggers, migration checksums, and Phase 1/2A behavior remain authoritative.
+This ledger was created before CAP removal at checkpoint `8be6b3f` and is retained as the replacement/deletion record. Existing PostgreSQL names, rows, constraints, triggers, migration checksums, and implemented Phase 1/2A/2B/3A behavior remain authoritative.
 
 ## Architecture replacement
 
@@ -44,28 +44,28 @@ PostgreSQL folds the unquoted CAP-generated names below to lowercase in catalog 
 | `UserAccountRole` | `egas_useraccountrole` | Active Phase 2A |
 | `AuthSession` | `egas_authsession` | Active Phase 2A |
 | `AuthLoginAttempt` | `egas_authloginattempt` | Active Phase 2A |
-| `ImportBatch` | `egas_importbatch` | Pilot read; activation deferred |
-| `EmployeeImportStagingRow` | `egas_employeeimportstagingrow` | Preserved; Phase 2B deferred |
-| `Employee` | `egas_employee` | Preserved; lookup deferred |
-| `EmployeeAnnualSnapshot` | `egas_employeeannualsnapshot` | Pilot read; activation deferred |
-| `RoutingUnitSourceAlias` | `egas_routingunitsourcealias` | Preserved; import deferred |
+| `ImportBatch` | `egas_importbatch` | Active Phase 2B staging/validation/activation |
+| `EmployeeImportStagingRow` | `egas_employeeimportstagingrow` | Active Phase 2B staging/validation |
+| `Employee` | `egas_employee` | Active Phase 2B stable identity |
+| `EmployeeAnnualSnapshot` | `egas_employeeannualsnapshot` | Active Phase 2B/3A immutable annual source |
+| `RoutingUnitSourceAlias` | `egas_routingunitsourcealias` | Active Phase 2B Admin-managed exact mapping |
 | `ApprovingAuthorityAssignment` | `egas_approvingauthorityassignment` | Active Phase 2A |
 | `AuthorityDelegation` | `egas_authoritydelegation` | Active Phase 2A |
 | `UserSignatureAsset` | `egas_usersignatureasset` | Preserved; signatures deferred |
-| `WorkflowRequest` | `egas_workflowrequest` | Preserved; workflow deferred |
+| `WorkflowRequest` | `egas_workflowrequest` | Active Phase 3A draft root |
 | `RequestFormSection` | `egas_requestformsection` | Preserved; workflow deferred |
-| `RequestCandidate` | `egas_requestcandidate` | Preserved; workflow deferred |
+| `RequestCandidate` | `egas_requestcandidate` | Active Phase 3A draft candidate/snapshot reference |
 | `SecondmentPositionOption` | `egas_secondmentpositionoption` | Preserved; workflow deferred |
-| `WorkflowIteration` | `egas_workflowiteration` | Preserved; workflow deferred |
-| `StageTask` | `egas_stagetask` | Preserved; workflow deferred |
+| `WorkflowIteration` | `egas_workflowiteration` | Active Phase 3A iteration 1 foundation |
+| `StageTask` | `egas_stagetask` | Active Phase 3A P1/S1 and Organization-claim foundation |
 | `StageReceivedSnapshot` | `egas_stagereceivedsnapshot` | Preserved append-only table |
 | `PromotionDecision` | `egas_promotiondecision` | Preserved; workflow deferred |
-| `WorkflowNote` | `egas_workflownote` | Preserved append-only table |
-| `StageAction` | `egas_stageaction` | Preserved append-only table |
+| `WorkflowNote` | `egas_workflownote` | Active Phase 3A append-only notes |
+| `StageAction` | `egas_stageaction` | Active Phase 3A append-only business timeline evidence |
 | `WorkflowSignoff` | `egas_workflowsignoff` | Preserved append-only table |
 | `SecurityEvent` | `egas_securityevent` | Active Phase 2A |
-| `Notification` | `egas_notification` | Preserved; notifications deferred |
-| `AuditEvent` | `egas_auditevent` | Preserved append-only table |
+| `Notification` | `egas_notification` | Active Phase 3A recipient-owned in-app foundation |
+| `AuditEvent` | `egas_auditevent` | Active Phase 3A append-only workflow audit chain |
 | `PdfGenerationLog` | `egas_pdfgenerationlog` | Preserved; PDF generation deferred |
 | CAP outbox | `cds_outbox_messages` | Preserved but no longer accessed |
 | CAP compiled-model metadata | `cds_model` | Preserved in upgraded databases but no longer accessed |
@@ -97,6 +97,8 @@ Migration `001_postgres_integrity.sql` remains immutable. Its partial unique ind
 | Health liveness/readiness | `GET /health`, `GET /ready` | Anonymous | Process health / parameterized DB probe |
 | Reference projections | `GET /api/reference/*` | Authenticated | Explicit safe read-only SQL |
 | Foundation status functions | Removed as CAP-specific scaffolding | N/A | No business state or behavior to preserve |
+
+Phase 3A adds explicit REST routes under `/api/workflow` for owned draft creation/list/detail, active-snapshot candidate add/removal, routing-scoped authority options/selection, notes, timeline, Organization queue, and atomic task claim. `/api/notifications` provides own-recipient list/read behavior. There is deliberately no generic CRUD, submit, signoff, downstream transition, or full Promotion/Secondment decision route; see [phase3a-workflow-api.md](phase3a-workflow-api.md).
 
 ## Verified Phase 2A operation parity
 

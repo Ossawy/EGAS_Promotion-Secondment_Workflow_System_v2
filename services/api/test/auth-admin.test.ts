@@ -78,6 +78,13 @@ describe('authentication and exact active-role isolation', () => {
       await expect(auth.login(username, candidate, { ...evidence, ipAddress: ip }))
         .rejects.toMatchObject({ status: 401, message: 'Invalid username or password' })
     }
+    const internalReasons = await pool.query<{ failureReason: string }>(
+      `SELECT failurereason AS "failureReason" FROM egas_authloginattempt
+        WHERE ipaddress IN ($1,$2,$3,$4) ORDER BY ipaddress`, cases.map(([, , ip]) => ip)
+    )
+    expect(internalReasons.rows.map(row => row.failureReason)).toEqual([
+      'UNKNOWN_OR_INVALID', 'ACCOUNT_DISABLED', 'ACCOUNT_LOCKED', 'INVALID_CREDENTIAL'
+    ])
   })
 
   it('changes passwords transactionally and rotates all sessions', async () => {

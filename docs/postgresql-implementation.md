@@ -32,6 +32,8 @@ Migration 001 remains byte-for-byte the verified applied file even though its co
 
 Migration `002_phase2b_annual_snapshot_integrity.sql` is the first Phase 2B additive migration. It adds a partial unique index allowing only one `ACTIVATED` import batch per year and attaches the existing append-only trigger function to `egas_employeeannualsnapshot`. It creates no duplicate data tables and changes no baseline/001 SQL.
 
+Migration `003_phase3a_workflow_draft_foundation.sql` (SHA-256 `01e9e6c34657a0a6f15ce8cbbfc322c5dccc97b2a47ec177d1ea3b03662e7ec0`) is required because the preserved physical model made routing, authority, and form-section references mandatory before Phase 3A could legally know them. It permits a request shell before its first candidate, permits draft candidates before future form-section behavior, adds soft-removal evidence plus a partial active-candidate uniqueness/index, validates authority-snapshot coherence and cycle/stage codes, and fills missing workflow foreign keys on fresh preserved-baseline installations without duplicating constraints on upgraded databases. It creates no replacement workflow tables and preserves all rows.
+
 ## Least privilege
 
 `services/api/db/operations/least-privilege-role.sql.example` validates the database owner, accepts a `public` owner of either that role or `pg_database_owner`, verifies every public table/view/sequence owner, verifies the runtime role is restricted, and verifies the invoker can manage owner defaults. It uses `ON_ERROR_STOP`, deliberate SQL errors before `BEGIN`, and rollback-on-verification failures; no incompatible `\quit` arguments are used.

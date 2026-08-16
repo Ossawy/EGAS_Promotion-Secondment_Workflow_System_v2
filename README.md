@@ -1,6 +1,6 @@
 # EGAS Promotion & Secondment Workflow System
 
-The implemented Phase 1/2A/2B backend is a plain Node.js/TypeScript modular monolith:
+The implemented Phase 1/2A/2B/3A backend is a plain Node.js/TypeScript modular monolith:
 
 ```text
 React + TypeScript (future client)
@@ -10,7 +10,7 @@ Node.js + TypeScript + Express 5
 PostgreSQL
 ```
 
-The original BRD and authoritative v2.0 PDF retain SAP/Fiori/direct-HCM references for historical traceability. Following IT consultation, those implementation choices were superseded. The active backend has no SAP CAP, CDS, CQN, Fiori, UI5, BTP, OData, RFC, or BAPI dependency.
+The v3.0 baseline is the current business authority. Older documents retain SAP/Fiori/direct-HCM references for historical traceability, but those implementation choices were superseded. The active backend has no SAP CAP, CDS, CQN, Fiori, UI5, BTP, OData, RFC, or BAPI dependency.
 
 ## Implemented scope
 
@@ -25,8 +25,11 @@ The original BRD and authoritative v2.0 PDF retain SAP/Fiori/direct-HCM referenc
 - Controlled annual `.xlsx` inspection, raw staging, normalization, exact routing/alias validation, aggregate batch reporting, revalidation, and explicit transactional activation.
 - Stable employee identities, immutable yearly snapshots, and active-snapshot Employee Affairs lookup.
 - Admin-only routing-alias and import-batch APIs with CSRF/Origin enforcement and aggregate security evidence.
+- Transactional Promotion/Secondment draft roots with iteration 1 and assigned P1/S1 task foundations.
+- Active-snapshot candidate selection, frozen draft display fields, one-request/one-routing-unit enforcement, controlled soft removal, and routing-scoped authority selection.
+- Append-only workflow notes, safe timeline read model, Organization queue/atomic claim infrastructure, and recipient-owned in-app notifications.
 
-P1-P5/S1-S5 workflow, signatures, PDFs, workflow notifications, and React screens remain intentionally deferred.
+Submission and full P1-P5/S1-S5 decisions/transitions, signatures, PDFs, and React screens remain intentionally deferred. No submit route exists in Phase 3A.
 
 ## Configuration
 
@@ -38,7 +41,7 @@ Production requires HTTPS, `NODE_ENV=production`, `EGAS_REQUIRE_SECURE_COOKIE=tr
 
 1. Install packages: `npm install`, then `npm run setup`.
 2. As a controlled DBA, create a database, schema/migration-owner login, and separate restricted runtime login. Passwords belong in `psql` prompts or a secret manager, not shell history.
-3. Put migration-owner credentials in the private `services/api/.env`, then run `npm run db:migrate`.
+3. Put migration-owner credentials in the private `services/api/.env`, then run `npm run db:migrate` (including additive Phase 3A migration 003).
 4. Apply runtime grants as the owner/controlled DBA:
 
    ```powershell
@@ -77,7 +80,7 @@ Existing installations must not recreate the database or run the frozen logical 
 
 `pilot:check` is expected to exit non-zero until all 22 active routing units have active primary-authority coverage and an annual employee snapshot is activated. Do not invent mappings or synthetic employee data to make it green.
 
-See [docs/phase2a-api.md](docs/phase2a-api.md), [docs/phase2b-data-routing.md](docs/phase2b-data-routing.md), [docs/postgresql-implementation.md](docs/postgresql-implementation.md), [docs/cap-to-node-parity.md](docs/cap-to-node-parity.md), and [PILOT_SETUP.md](PILOT_SETUP.md).
+See [docs/phase2a-api.md](docs/phase2a-api.md), [docs/phase2b-data-routing.md](docs/phase2b-data-routing.md), [docs/phase3a-workflow-api.md](docs/phase3a-workflow-api.md), [docs/postgresql-implementation.md](docs/postgresql-implementation.md), [docs/cap-to-node-parity.md](docs/cap-to-node-parity.md), and [PILOT_SETUP.md](PILOT_SETUP.md).
 
 ## Security/repository policy
 

@@ -58,6 +58,31 @@ type StoredStagingRow = {
   raw: Record<string, string | number | boolean | null>
 }
 
+type ActivationBatchRow = {
+  snapshotYear: number
+  status: string
+  headerSchemaValidated: boolean
+  totalRows: number
+  validRows: number
+  warningRows: number
+  blockedRows: number
+}
+
+type ActivationStagingRow = {
+  sourceRowNumber: number
+  personnelNumber: string
+  employeeName: string
+  subgroup: string | null
+  sourceRoutingUnit: string
+  currentJobTitle: string | null
+  performanceRating: string | null
+  qualificationSource1: string | null
+  qualificationSource2: string | null
+  qualificationDate: string | null
+  mappedRoutingUnitId: string
+  validationStatus: string
+}
+
 function batchProjection(alias = 'b'): string {
   return `${alias}.id, ${alias}.snapshotyear AS "snapshotYear", ${alias}.sourcefilename AS "sourceFilename",
     ${alias}.sourcesha256 AS "sourceSha256", ${alias}.importedby_id AS "importedById",
@@ -142,6 +167,141 @@ async function insertStagingRow(db: Queryable, batchId: string, row: NormalizedS
       row.qualificationSource1, row.qualificationSource2, row.qualificationDate,
       row.mappedRoutingUnitId, row.validationStatus, JSON.stringify(row.validationMessages)]
   )
+}
+
+function validateActivationBatch(batch: ActivationBatchRow | undefined): { batch: ActivationBatchRow, totalRows: number } {
+  if (!batch) throw new AppError(404, 'Import batch not found', 'IMPORT_BATCH_NOT_FOUND')
+  if (batch.status === 'ACTIVATED') throw new AppError(409, 'Import batch is already activated', 'IMPORT_ALREADY_ACTIVATED')
+  if (batch.status !== 'VALIDATED' || !batch.headerSchemaValidated) {
+    throw new AppError(409, 'Import batch has not completed approved validation', 'IMPORT_NOT_VALIDATED')
+  }
+  const totalRows = Number(batch.totalRows)
+  if (totalRows < 1 || Number(batch.blockedRows) !== 0
+    || Number(batch.validRows) + Number(batch.warningRows) !== totalRows) {
+    throw new AppError(409, 'A full annual snapshot requires zero blocked rows', 'IMPORT_BLOCKED_ROWS')
+  }
+  return { batch, totalRows }
+}
+
+async function loadActivationBatch(db: Queryable, batchId: string): Promise<{ batch: ActivationBatchRow, totalRows: number }> {
+  const migration = await db.query(
+    `SELECT 1 FROM egas_schemamigration WHERE version='002_phase2b_annual_snapshot_integrity'`
+  )
+  if (!migration.rows[0]) {
+    throw new AppError(409, 'Phase 2B database integrity migration must be applied before activation', 'IMPORT_MIGRATION_REQUIRED')
+  }
+  const result = await db.query<ActivationBatchRow>(
+    `SELECT snapshotyear AS "snapshotYear",status,headerschemavalidated AS "headerSchemaValidated",
+            totalrows AS "totalRows",validrows AS "validRows",warningrows AS "warningRows",blockedrows AS "blockedRows"
+       FROM egas_importbatch WHERE id=$1 FOR UPDATE`, [batchId]
+  )
+  return validateActivationBatch(result.rows[0])
+}
+
+async function ensureActivationYearAvailable(
+  db: Queryable,
+  batchId: string,
+  snapshotYear: number
+): Promise<void> {
+  const active = await db.query(
+    `SELECT 1 FROM egas_importbatch WHERE snapshotyear=$1 AND status='ACTIVATED' AND id<>$2 LIMIT 1`,
+    [snapshotYear, batchId]
+  )
+  if (active.rows[0]) throw new AppError(409, 'An annual snapshot is already activated for this year', 'IMPORT_YEAR_ACTIVE')
+  const existingSnapshots = await db.query(
+    `SELECT 1 FROM egas_employeeannualsnapshot WHERE snapshotyear=$1 LIMIT 1`, [snapshotYear]
+  )
+  if (existingSnapshots.rows[0]) throw new AppError(409, 'Annual snapshots for this year already exist', 'IMPORT_YEAR_IMMUTABLE')
+}
+
+async function loadActivationRows(
+  db: Queryable,
+  batchId: string,
+  totalRows: number
+): Promise<ActivationStagingRow[]> {
+  const result = await db.query<ActivationStagingRow>(
+    `SELECT sourcerownumber AS "sourceRowNumber",personnelnumber AS "personnelNumber",
+            employeename AS "employeeName",subgroup,sourceroutingunit AS "sourceRoutingUnit",
+            currentjobtitle AS "currentJobTitle",performancerating AS "performanceRating",
+            qualificationsource1 AS "qualificationSource1",qualificationsource2 AS "qualificationSource2",
+            qualificationdate AS "qualificationDate",mappedroutingunit_id AS "mappedRoutingUnitId",
+            validationstatus AS "validationStatus"
+       FROM egas_employeeimportstagingrow WHERE importbatch_id=$1 ORDER BY sourcerownumber`, [batchId]
+  )
+  const inconsistent = result.rows.length !== totalRows || result.rows.some(row =>
+    !row.personnelNumber || !row.employeeName || !row.mappedRoutingUnitId
+    || (row.validationStatus !== 'VALID' && row.validationStatus !== 'WARNING')
+  )
+  if (inconsistent) {
+    throw new AppError(409, 'Staging rows do not satisfy full-snapshot activation invariants', 'IMPORT_STAGING_INCONSISTENT')
+  }
+  return result.rows
+}
+
+async function employeeId(db: Queryable, personnelNumber: string): Promise<string> {
+  const existing = await db.query<{ id: string }>(
+    `SELECT id FROM egas_employee WHERE personnelnumber=$1`, [personnelNumber]
+  )
+  if (existing.rows[0]) return existing.rows[0].id
+  const createdId = randomUUID()
+  try {
+    await db.query(
+      `INSERT INTO egas_employee (id,personnelnumber,createdat) VALUES ($1,$2,CURRENT_TIMESTAMP)`,
+      [createdId, personnelNumber]
+    )
+    return createdId
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error
+    const concurrent = await db.query<{ id: string }>(
+      `SELECT id FROM egas_employee WHERE personnelnumber=$1`, [personnelNumber]
+    )
+    if (concurrent.rows[0]) return concurrent.rows[0].id
+    throw error
+  }
+}
+
+async function insertAnnualSnapshot(
+  db: Queryable,
+  batchId: string,
+  snapshotYear: number,
+  row: ActivationStagingRow
+): Promise<void> {
+  const stableEmployeeId = await employeeId(db, row.personnelNumber)
+  await db.query(
+    `INSERT INTO egas_employeeannualsnapshot
+      (id,employee_id,importbatch_id,snapshotyear,personnelnumber,employeename,subgroup,
+       sourceroutingunit,routingunit_id,currentjobtitle,performancerating,qualificationsource1,
+       qualificationsource2,qualificationdate,sourcerownumber,createdat)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,CURRENT_TIMESTAMP)`,
+    [randomUUID(), stableEmployeeId, batchId, snapshotYear, row.personnelNumber,
+      row.employeeName, row.subgroup, row.sourceRoutingUnit, row.mappedRoutingUnitId,
+      row.currentJobTitle, row.performanceRating, row.qualificationSource1, row.qualificationSource2,
+      row.qualificationDate, Number(row.sourceRowNumber)]
+  )
+}
+
+async function activateValidatedBatch(
+  db: Queryable,
+  batchId: string,
+  actor: ImportActor,
+  evidence: RequestEvidence
+): Promise<void> {
+  await db.query(`SELECT pg_advisory_xact_lock(hashtext('egas.annual-import.activation'))`)
+  const { batch, totalRows } = await loadActivationBatch(db, batchId)
+  const snapshotYear = Number(batch.snapshotYear)
+  await ensureActivationYearAvailable(db, batchId, snapshotYear)
+  const rows = await loadActivationRows(db, batchId, totalRows)
+  for (const row of rows) await insertAnnualSnapshot(db, batchId, snapshotYear, row)
+  const changed = await db.query(
+    `UPDATE egas_importbatch SET status='ACTIVATED' WHERE id=$1 AND status='VALIDATED'`, [batchId]
+  )
+  if (changed.rowCount !== 1) {
+    throw new AppError(409, 'Import batch activation raced with another operation', 'IMPORT_ACTIVATION_RACE')
+  }
+  await recordSecurityEvent(db, {
+    actorUserId: actor.userId, eventType: 'IMPORT_BATCH_ACTIVATED', ...evidence,
+    details: { batchId, snapshotYear, totalRows }
+  })
 }
 
 export class ImportService {
@@ -264,104 +424,7 @@ export class ImportService {
   async activate(batchValue: unknown, actor: ImportActor, evidence: RequestEvidence): Promise<ImportResult> {
     const batchId = uuid(batchValue, 'batchId')
     try {
-      await withTransaction(this.pool, async db => {
-        await db.query(`SELECT pg_advisory_xact_lock(hashtext('egas.annual-import.activation'))`)
-        const migration = await db.query(
-          `SELECT 1 FROM egas_schemamigration WHERE version='002_phase2b_annual_snapshot_integrity'`
-        )
-        if (!migration.rows[0]) {
-          throw new AppError(409, 'Phase 2B database integrity migration must be applied before activation', 'IMPORT_MIGRATION_REQUIRED')
-        }
-        const batchResult = await db.query<{
-          snapshotYear: number, status: string, headerSchemaValidated: boolean,
-          totalRows: number, validRows: number, warningRows: number, blockedRows: number
-        }>(
-          `SELECT snapshotyear AS "snapshotYear",status,headerschemavalidated AS "headerSchemaValidated",
-                  totalrows AS "totalRows",validrows AS "validRows",warningrows AS "warningRows",blockedrows AS "blockedRows"
-             FROM egas_importbatch WHERE id=$1 FOR UPDATE`, [batchId]
-        )
-        const batch = batchResult.rows[0]
-        if (!batch) throw new AppError(404, 'Import batch not found', 'IMPORT_BATCH_NOT_FOUND')
-        if (batch.status === 'ACTIVATED') throw new AppError(409, 'Import batch is already activated', 'IMPORT_ALREADY_ACTIVATED')
-        if (batch.status !== 'VALIDATED' || !batch.headerSchemaValidated) {
-          throw new AppError(409, 'Import batch has not completed approved validation', 'IMPORT_NOT_VALIDATED')
-        }
-        const totalRows = Number(batch.totalRows)
-        if (totalRows < 1 || Number(batch.blockedRows) !== 0
-          || Number(batch.validRows) + Number(batch.warningRows) !== totalRows) {
-          throw new AppError(409, 'A full annual snapshot requires zero blocked rows', 'IMPORT_BLOCKED_ROWS')
-        }
-        const active = await db.query(
-          `SELECT 1 FROM egas_importbatch WHERE snapshotyear=$1 AND status='ACTIVATED' AND id<>$2 LIMIT 1`,
-          [Number(batch.snapshotYear), batchId]
-        )
-        if (active.rows[0]) throw new AppError(409, 'An annual snapshot is already activated for this year', 'IMPORT_YEAR_ACTIVE')
-        const existingSnapshots = await db.query(
-          `SELECT 1 FROM egas_employeeannualsnapshot WHERE snapshotyear=$1 LIMIT 1`, [Number(batch.snapshotYear)]
-        )
-        if (existingSnapshots.rows[0]) throw new AppError(409, 'Annual snapshots for this year already exist', 'IMPORT_YEAR_IMMUTABLE')
-
-        const rows = await db.query<{
-          sourceRowNumber: number, personnelNumber: string, employeeName: string, subgroup: string | null,
-          sourceRoutingUnit: string, currentJobTitle: string | null, performanceRating: string | null,
-          qualificationSource1: string | null, qualificationSource2: string | null,
-          qualificationDate: string | null, mappedRoutingUnitId: string, validationStatus: string
-        }>(
-          `SELECT sourcerownumber AS "sourceRowNumber",personnelnumber AS "personnelNumber",
-                  employeename AS "employeeName",subgroup,sourceroutingunit AS "sourceRoutingUnit",
-                  currentjobtitle AS "currentJobTitle",performancerating AS "performanceRating",
-                  qualificationsource1 AS "qualificationSource1",qualificationsource2 AS "qualificationSource2",
-                  qualificationdate AS "qualificationDate",mappedroutingunit_id AS "mappedRoutingUnitId",
-                  validationstatus AS "validationStatus"
-             FROM egas_employeeimportstagingrow WHERE importbatch_id=$1 ORDER BY sourcerownumber`, [batchId]
-        )
-        if (rows.rows.length !== totalRows || rows.rows.some(row =>
-          !row.personnelNumber || !row.employeeName || !row.mappedRoutingUnitId
-          || (row.validationStatus !== 'VALID' && row.validationStatus !== 'WARNING')
-        )) {
-          throw new AppError(409, 'Staging rows do not satisfy full-snapshot activation invariants', 'IMPORT_STAGING_INCONSISTENT')
-        }
-
-        for (const row of rows.rows) {
-          let employee = await db.query<{ id: string }>(
-            `SELECT id FROM egas_employee WHERE personnelnumber=$1`, [row.personnelNumber]
-          )
-          if (!employee.rows[0]) {
-            const employeeId = randomUUID()
-            try {
-              await db.query(
-                `INSERT INTO egas_employee (id,personnelnumber,createdat) VALUES ($1,$2,CURRENT_TIMESTAMP)`,
-                [employeeId, row.personnelNumber]
-              )
-              employee = { ...employee, rows: [{ id: employeeId }] }
-            } catch (error) {
-              if (!isUniqueViolation(error)) throw error
-              employee = await db.query<{ id: string }>(
-                `SELECT id FROM egas_employee WHERE personnelnumber=$1`, [row.personnelNumber]
-              )
-            }
-          }
-          await db.query(
-            `INSERT INTO egas_employeeannualsnapshot
-              (id,employee_id,importbatch_id,snapshotyear,personnelnumber,employeename,subgroup,
-               sourceroutingunit,routingunit_id,currentjobtitle,performancerating,qualificationsource1,
-               qualificationsource2,qualificationdate,sourcerownumber,createdat)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,CURRENT_TIMESTAMP)`,
-            [randomUUID(), employee.rows[0]!.id, batchId, Number(batch.snapshotYear), row.personnelNumber,
-              row.employeeName, row.subgroup, row.sourceRoutingUnit, row.mappedRoutingUnitId,
-              row.currentJobTitle, row.performanceRating, row.qualificationSource1, row.qualificationSource2,
-              row.qualificationDate, Number(row.sourceRowNumber)]
-          )
-        }
-        const changed = await db.query(
-          `UPDATE egas_importbatch SET status='ACTIVATED' WHERE id=$1 AND status='VALIDATED'`, [batchId]
-        )
-        if (changed.rowCount !== 1) throw new AppError(409, 'Import batch activation raced with another operation', 'IMPORT_ACTIVATION_RACE')
-        await recordSecurityEvent(db, {
-          actorUserId: actor.userId, eventType: 'IMPORT_BATCH_ACTIVATED', ...evidence,
-          details: { batchId, snapshotYear: Number(batch.snapshotYear), totalRows }
-        })
-      })
+      await withTransaction(this.pool, async db => await activateValidatedBatch(db, batchId, actor, evidence))
     } catch (error) {
       await this.invalidActivation(
         actor, batchId, error instanceof AppError ? error.code : 'IMPORT_ACTIVATION_FAILED', evidence

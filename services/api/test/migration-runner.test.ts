@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyMigration, executeFullPostgresScript, loadMigrations, migrateDatabase } from '../src/db/migration-runner.js'
+import {
+  applyMigration, executeFullPostgresScript, isMigrationFilename, loadMigrations, migrateDatabase
+} from '../src/db/migration-runner.js'
 
 const script = `
 CREATE TABLE migration_probe (value text);
@@ -13,6 +15,14 @@ $migration_body$;
 `
 
 describe('PostgreSQL migration runner', () => {
+  it('recognizes migration filenames with linear parsing, including adversarial near-matches', () => {
+    expect(['001.sql', '002_phase2.sql', '9-A.SQL'].map(isMigrationFilename)).toEqual([true, true, true])
+    expect(['migration.sql', '.sql', '001.sql.bak', '001', '001 probe.sql', '001..sql'].map(isMigrationFilename))
+      .toEqual([false, false, false, false, false, false])
+    expect(isMigrationFilename(`1${'a'.repeat(1_000_000)}.txt`)).toBe(false)
+    expect(isMigrationFilename(`1${'a'.repeat(1_000_000)}.sql`)).toBe(true)
+  })
+
   it('sends a complete multi-statement and dollar-quoted script as one parameterless query', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [] })
     await executeFullPostgresScript({ query } as never, script)
@@ -66,12 +76,20 @@ describe('PostgreSQL migration runner', () => {
     expect(release).toHaveBeenCalledOnce()
   })
 
-  it('loads the additive Phase 2B annual-snapshot integrity migration after immutable 001', async () => {
+  it('loads additive Phase 2B and Phase 3A migrations after immutable 001', async () => {
     const migrations = await loadMigrations()
     expect(migrations.map(migration => migration.version)).toEqual([
-      '001_postgres_integrity','002_phase2b_annual_snapshot_integrity'
+      '001_postgres_integrity','002_phase2b_annual_snapshot_integrity','003_phase3a_workflow_draft_foundation'
     ])
     expect(migrations[1]?.sql).toContain('uq_egas_activated_import_batch_per_year')
     expect(migrations[1]?.sql).toContain('trg_egas_employee_annual_snapshot_append_only')
+    expect(migrations[2]?.sql).toContain('uq_egas_active_candidate_request_snapshot')
+    expect(migrations[2]?.sql).toContain('removedBy_ID')
+    expect(migrations[2]?.sql).toContain('ck_egas_request_current_stage')
+    expect(migrations.map(migration => migration.sha256)).toEqual([
+      '760a0c27322cd44f18bd57854fedccad334aabfe985052e70f853cbb5a2aae6f',
+      '0d423387e20104188d9755209eabd58f354cff41a30ca7a32ff8350fd1d66b40',
+      '01e9e6c34657a0a6f15ce8cbbfc322c5dccc97b2a47ec177d1ea3b03662e7ec0'
+    ])
   })
 })

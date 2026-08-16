@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { writeFile } from 'node:fs/promises'
-import { inspectAnnualWorkbook, WORKBOOK_LIMITS, type SourceWorkbookRow } from '../src/modules/import/workbook-inspector.js'
+import {
+  inspectAnnualWorkbook, inspectCellValue, WORKBOOK_LIMITS, type SourceWorkbookRow
+} from '../src/modules/import/workbook-inspector.js'
 import { requiredHeadersForYear } from '../src/modules/import/header-validation.js'
 import {
   applyDuplicatePersonnelValidation, normalizeQualificationDate, normalizeStagingRow, type RoutingIndex
@@ -84,6 +86,16 @@ describe('Phase 2B secure workbook inspection', () => {
   it('13. rejects ambiguous multiple matching worksheets', async () => {
     await expect(inspectAnnualWorkbook(await syntheticWorkbook({ secondMatchingSheet: true }), 2026)).rejects.toThrow(/More than one/)
   })
+
+  it('rejects embedded OOXML content after the ZIP validator refactor', async () => {
+    const file = await syntheticWorkbook({ forbiddenZipEntry: 'xl/embeddings/object1.bin' })
+    await expect(inspectAnnualWorkbook(file, 2026)).rejects.toThrow(/embedded-object/)
+  })
+
+  it('rejects unsupported object-valued cells instead of importing default object text', async () => {
+    const unsupportedCell = { value: { arbitrary: true }, text: '[object Object]' }
+    expect(() => inspectCellValue(unsupportedCell as never)).toThrow(/Unsupported spreadsheet cell value/)
+  })
 })
 
 describe('Phase 2B normalization and deterministic routing', () => {
@@ -141,8 +153,10 @@ describe('Phase 2B normalization and deterministic routing', () => {
   })
 
   it('26. accepts real Excel/JavaScript date values', () => {
-    expect(normalizeQualificationDate(new Date('2020-01-15T00:00:00Z'))).toBe('2020-01-15')
-    expect(normalizeQualificationDate(43_845)).toBe('2020-01-15')
+    expect(normalizeQualificationDate(new Date('2020-01-15T00:00:00Z'))).toEqual({ kind: 'VALID', value: '2020-01-15' })
+    expect(normalizeQualificationDate(43_845)).toEqual({ kind: 'VALID', value: '2020-01-15' })
+    expect(normalizeQualificationDate('')).toEqual({ kind: 'EMPTY', value: null })
+    expect(normalizeQualificationDate('31/02/2020')).toEqual({ kind: 'INVALID' })
   })
 
   it('27. reports an unknown performance value as blocking', () => {
