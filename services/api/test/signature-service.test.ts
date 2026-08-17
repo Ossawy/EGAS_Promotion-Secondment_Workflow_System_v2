@@ -11,28 +11,89 @@ import type { AuthContext } from '../src/modules/auth/types.ts'
 import { canonicalizeSignature, SignatureService } from '../src/modules/workflow/signature-service.ts'
 import { WorkflowService } from '../src/modules/workflow/workflow-service.ts'
 import { isolatedPool, testConfig } from './helpers/database.ts'
+import {
+  DatabaseCurrentPasswordVerifier
+} from '../src/modules/auth/current-password-verifier.ts'
+
+import {
+  LocalAuthenticationProvider
+} from '../src/modules/auth/local-authentication-provider.ts'
 
 const evidence: RequestEvidence = { ipAddress: '127.0.0.1', userAgent: 'vitest', correlationId: 'signature-test' }
 let pool: Pool
 let storageDirectory: string
 let config: AppConfig
 let service: SignatureService
+let authenticationProvider: LocalAuthenticationProvider
 let workflow: WorkflowService
 
-async function account(username: string, jobTitle: string | null = 'باحث شئون عاملين'): Promise<AuthContext> {
-  const userId = randomUUID(); const roleId = randomUUID()
+async function account(
+  username: string,
+  jobTitle: string | null = 'باحث شئون عاملين',
+  password = 'synthetic-current-password'
+): Promise<AuthContext> {
+  const userId = randomUUID()
+  const roleId = randomUUID()
+
+  const passwordHash =
+    await authenticationProvider.hashPassword(password)
+
   await pool.query(
     `INSERT INTO egas_useraccount
-      (id,username,displayname,jobtitle,passwordhash,mustchangepassword,isactive,createdat,updatedat)
-     VALUES ($1,$2,$3,$4,'synthetic',FALSE,TRUE,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
-    [userId, username, `الاسم ${username}`, jobTitle]
+      (
+        id,
+        username,
+        displayname,
+        jobtitle,
+        passwordhash,
+        mustchangepassword,
+        isactive,
+        createdat,
+        updatedat
+      )
+     VALUES (
+       $1,$2,$3,$4,$5,FALSE,TRUE,
+       CURRENT_TIMESTAMP,
+       CURRENT_TIMESTAMP
+     )`,
+    [
+      userId,
+      username,
+      `الاسم ${username}`,
+      jobTitle,
+      passwordHash
+    ]
   )
+
   await pool.query(
-    `INSERT INTO egas_useraccountrole (id,user_id,role,canmanageadmins,isactive,grantedat)
-     VALUES ($1,$2,'EMPLOYEE_AFFAIRS',FALSE,TRUE,CURRENT_TIMESTAMP)`, [roleId, userId]
+    `INSERT INTO egas_useraccountrole
+      (
+        id,
+        user_id,
+        role,
+        canmanageadmins,
+        isactive,
+        grantedat
+      )
+     VALUES (
+       $1,$2,'EMPLOYEE_AFFAIRS',FALSE,TRUE,
+       CURRENT_TIMESTAMP
+     )`,
+    [
+      roleId,
+      userId
+    ]
   )
-  return { userId, username, sessionId: randomUUID(), activeRole: 'EMPLOYEE_AFFAIRS', roleAssignmentId: roleId,
-    canManageAdmins: false, mustChangePassword: false }
+
+  return {
+    userId,
+    username,
+    sessionId: randomUUID(),
+    activeRole: 'EMPLOYEE_AFFAIRS',
+    roleAssignmentId: roleId,
+    canManageAdmins: false,
+    mustChangePassword: false
+  }
 }
 
 async function png(width = 320, height = 120, color = '#0f6b43'): Promise<Buffer> {
@@ -43,8 +104,21 @@ beforeEach(async () => {
   pool = await isolatedPool()
   storageDirectory = await mkdtemp(join(tmpdir(), 'egas-signature-'))
   config = { ...testConfig, signatures: { ...testConfig.signatures, storageDirectory } }
-  service = new SignatureService(pool, config)
-  workflow = new WorkflowService(pool)
+  authenticationProvider =
+  new LocalAuthenticationProvider(pool, config)
+
+const currentPasswordVerifier =
+  new DatabaseCurrentPasswordVerifier(
+    authenticationProvider
+  )
+
+service = new SignatureService(
+  pool,
+  config,
+  currentPasswordVerifier
+)
+
+workflow = new WorkflowService(pool)
 })
 
 afterEach(async () => {
@@ -95,24 +169,61 @@ describe('secure signature assets and immutable workflow signoff', () => {
     const ownAsset = await service.upload(await png(320, 120, '#155e43'), 'image/png', signer, evidence) as { id: string }
     const foreignAsset = await service.upload(await png(321, 120, '#166534'), 'image/png', intruder, evidence) as { id: string }
 
-    await expect(service.sign(request.id, foreignAsset.id, 'مدير مزور', signer, evidence))
+    await expect(service.sign(request.id,foreignAsset.id,'مدير مزور','synthetic-current-password',signer,evidence))
       .rejects.toMatchObject({ code: 'SIGNATURE_ASSET_NOT_FOUND' })
-    const signoff = await service.sign(request.id, ownAsset.id, 'مدير شئون العاملين', signer, evidence)
+    const signoff = await service.sign(request.id,ownAsset.id,'مدير شئون العاملين','synthetic-current-password',signer,evidence)
     expect(signoff).toMatchObject({
       stageCode: 'P1', signerName: 'الاسم signer', signerJobTitle: 'مدير شئون العاملين', jobTitleWasOverridden: true,
       signatureAssetId: ownAsset.id
     })
-    await expect(service.sign(request.id, ownAsset.id, null, signer, evidence))
-      .rejects.toMatchObject({ code: 'WORKFLOW_SIGNOFF_EXISTS' })
+  await expect(
+  service.sign(
+    request.id,
+    ownAsset.id,
+    null,
+    'synthetic-current-password',
+    signer,
+    evidence
+  )
+).rejects.toMatchObject({
+  code: 'WORKFLOW_SIGNOFF_EXISTS'
+})
     const stored = (await service.signoffs(request.id))[0]
     expect(stored).toMatchObject({ signerName: 'الاسم signer', signerJobTitle: 'مدير شئون العاملين' })
   })
 
   it('requires a signer job title when the account has no default and no override', async () => {
-    const signer = await account('no-title', null)
-    const request = await workflow.create({ requestType: 'SECONDMENT', cycleYear: 2026, formMonth: 8, formYear: 2026 }, signer, evidence)
-    const asset = await service.upload(await png(322, 120), 'image/png', signer, evidence) as { id: string }
-    await expect(service.sign(request.id, asset.id, null, signer, evidence))
-      .rejects.toMatchObject({ code: 'WORKFLOW_SIGNER_JOB_TITLE_REQUIRED' })
+  const signer = await account('no-title', null)
+
+  const request = await workflow.create(
+    {
+      requestType: 'SECONDMENT',
+      cycleYear: 2026,
+      formMonth: 8,
+      formYear: 2026
+    },
+    signer,
+    evidence
+  )
+
+  const asset = await service.upload(
+    await png(322, 120),
+    'image/png',
+    signer,
+    evidence
+  ) as { id: string }
+
+  await expect(
+    service.sign(
+      request.id,
+      asset.id,
+      null,
+      'synthetic-current-password',
+      signer,
+      evidence
+    )
+  ).rejects.toMatchObject({
+    code: 'WORKFLOW_SIGNER_JOB_TITLE_REQUIRED'
   })
+})
 })

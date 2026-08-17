@@ -8,7 +8,12 @@ import { withTransaction } from '../../db/transaction.ts'
 import type { RequestEvidence } from '../../middleware/request-context.ts'
 import { AppError, isUniqueViolation } from '../../shared/errors.ts'
 import { optionalText, uuid } from '../../shared/validation.ts'
+import { recordSecurityEvent } from '../audit/security-events.ts'
 import { recordWorkflowAudit } from '../audit/workflow-audit.ts'
+import {
+  signaturePassword,
+  type CurrentPasswordVerifier
+} from '../auth/current-password-verifier.ts'
 import type { AuthContext } from '../auth/types.ts'
 import { responsibleRole, type WorkflowStage } from './types.ts'
 import { WorkflowRepository } from './workflow-repository.ts'
@@ -114,7 +119,11 @@ export async function canonicalizeSignature(
 export class SignatureService {
   private readonly storageRoot: string
 
-  constructor(private readonly pool: Pool, private readonly config: AppConfig) {
+  constructor(
+    private readonly pool: Pool,
+    private readonly config: AppConfig,
+    private readonly currentPasswordVerifier?: CurrentPasswordVerifier
+  ) {
     this.storageRoot = resolve(config.signatures.storageDirectory)
   }
 
@@ -209,80 +218,301 @@ export class SignatureService {
     return content
   }
 
-  async sign(
-    requestValue: unknown,
-    assetValue: unknown,
-    jobTitleValue: unknown,
-    actor: AuthContext,
-    evidence: RequestEvidence
-  ): Promise<Record<string, unknown>> {
-    const requestId = uuid(requestValue, 'requestId')
-    const assetId = uuid(assetValue, 'signatureAssetId')
-    const jobTitleOverride = optionalText(jobTitleValue, 'jobTitle', 500)
-    let signoffId = ''
-    await withTransaction(this.pool, async db => {
+ async sign(
+  requestValue: unknown,
+  assetValue: unknown,
+  jobTitleValue: unknown,
+  passwordValue: unknown,
+  actor: AuthContext,
+  evidence: RequestEvidence
+): Promise<Record<string, unknown>> {
+  const currentPasswordVerifier =
+    this.currentPasswordVerifier
+
+  if (!currentPasswordVerifier) {
+    throw new AppError(
+      500,
+      'Signature reauthentication is unavailable',
+      'SIGNATURE_REAUTHENTICATION_UNAVAILABLE'
+    )
+  }
+
+  const requestId = uuid(requestValue, 'requestId')
+  const assetId = uuid(assetValue, 'signatureAssetId')
+  const jobTitleOverride = optionalText(
+    jobTitleValue,
+    'jobTitle',
+    500
+  )
+  const password = signaturePassword(passwordValue)
+
+  const outcome = await withTransaction(
+    this.pool,
+    async db => {
       const repo = new WorkflowRepository(db)
+
       const request = await repo.request(requestId, true)
-      if (!request) throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
+
+      if (!request) {
+        throw new AppError(
+          404,
+          'Workflow request not found',
+          'WORKFLOW_REQUEST_NOT_FOUND'
+        )
+      }
+
       const stage = request.currentStage
-      if (!mandatoryStages.has(stage) || responsibleRole(stage) !== actor.activeRole) {
-        throw new AppError(409, 'A signoff is not accepted at the current stage', 'WORKFLOW_SIGNOFF_STAGE_INVALID')
+
+      if (
+        !mandatoryStages.has(stage)
+        || responsibleRole(stage) !== actor.activeRole
+      ) {
+        throw new AppError(
+          409,
+          'A signoff is not accepted at the current stage',
+          'WORKFLOW_SIGNOFF_STAGE_INVALID'
+        )
       }
+
       const task = await repo.currentTask(request)
-      if (!task || task.assignedUserId !== actor.userId || !['OPEN', 'CLAIMED'].includes(task.taskStatus)) {
-        throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
+
+      if (
+        !task
+        || task.assignedUserId !== actor.userId
+        || !['OPEN', 'CLAIMED'].includes(task.taskStatus)
+      ) {
+        throw new AppError(
+          404,
+          'Workflow request not found',
+          'WORKFLOW_REQUEST_NOT_FOUND'
+        )
       }
+
       const asset = await db.query<SignatureAssetRow>(
-        `SELECT id,user_id AS "userId",storagekey AS "storageKey",mimetype AS "mimeType",
-                filesizebytes AS "fileSizeBytes",widthpx AS "widthPx",heightpx AS "heightPx",
-                filesha256 AS "fileSha256",uploadedat AS "uploadedAt"
-           FROM egas_usersignatureasset WHERE id=$1 AND user_id=$2 AND isactive=TRUE`, [assetId, actor.userId]
+        `SELECT id,
+                user_id AS "userId",
+                storagekey AS "storageKey",
+                mimetype AS "mimeType",
+                filesizebytes AS "fileSizeBytes",
+                widthpx AS "widthPx",
+                heightpx AS "heightPx",
+                filesha256 AS "fileSha256",
+                uploadedat AS "uploadedAt"
+           FROM egas_usersignatureasset
+          WHERE id = $1
+            AND user_id = $2
+            AND isactive = TRUE`,
+        [assetId, actor.userId]
       )
-      if (!asset.rows[0]) throw new AppError(404, 'Signature asset not found', 'SIGNATURE_ASSET_NOT_FOUND')
-      const identity = await db.query<{ displayName: string, jobTitle: string | null }>(
-        `SELECT displayname AS "displayName",jobtitle AS "jobTitle" FROM egas_useraccount WHERE id=$1 AND isactive=TRUE`, [actor.userId]
+
+      if (!asset.rows[0]) {
+        throw new AppError(
+          404,
+          'Signature asset not found',
+          'SIGNATURE_ASSET_NOT_FOUND'
+        )
+      }
+
+      const identity = await db.query<{
+        displayName: string
+        jobTitle: string | null
+      }>(
+        `SELECT displayname AS "displayName",
+                jobtitle AS "jobTitle"
+           FROM egas_useraccount
+          WHERE id = $1
+            AND isactive = TRUE`,
+        [actor.userId]
       )
-      if (!identity.rows[0]) throw new AppError(403, 'Active account required', 'ACCOUNT_INACTIVE')
-      const signerJobTitle = jobTitleOverride ?? identity.rows[0].jobTitle?.trim() ?? ''
-      if (!signerJobTitle) throw new AppError(400, 'A signer job title is required', 'WORKFLOW_SIGNER_JOB_TITLE_REQUIRED')
+
+      if (!identity.rows[0]) {
+        throw new AppError(
+          403,
+          'Active account required',
+          'ACCOUNT_INACTIVE'
+        )
+      }
+
+      const storedJobTitle =
+        identity.rows[0].jobTitle?.trim() ?? ''
+
+      const signerJobTitle =
+        jobTitleOverride ?? storedJobTitle
+
+      if (!signerJobTitle) {
+        throw new AppError(
+          400,
+          'A signer job title is required',
+          'WORKFLOW_SIGNER_JOB_TITLE_REQUIRED'
+        )
+      }
+
       const existing = await db.query(
-        `SELECT 1 FROM egas_workflowsignoff WHERE request_id=$1 AND iteration_id=$2 AND stagecode=$3 LIMIT 1`,
-        [requestId, task.iterationId, stage]
+        `SELECT 1
+           FROM egas_workflowsignoff
+          WHERE request_id = $1
+            AND iteration_id = $2
+            AND stagecode = $3
+          LIMIT 1`,
+        [
+          requestId,
+          task.iterationId,
+          stage
+        ]
       )
-      if (existing.rows[0]) throw new AppError(409, 'This stage already has an immutable signoff', 'WORKFLOW_SIGNOFF_EXISTS')
-      signoffId = randomUUID()
+
+      if (existing.rows[0]) {
+        throw new AppError(
+          409,
+          'This stage already has an immutable signoff',
+          'WORKFLOW_SIGNOFF_EXISTS'
+        )
+      }
+
+      const passwordIsValid =
+  await currentPasswordVerifier.verify(
+    db,
+    actor.userId,
+    password
+  )
+
+      if (!passwordIsValid) {
+        await recordSecurityEvent(db, {
+          actorUserId: actor.userId,
+          eventType: 'SIGNATURE_PASSWORD_REJECTED',
+          ipAddress: evidence.ipAddress,
+          correlationId: evidence.correlationId,
+          routingUnitId: request.routingUnitId,
+          details: {
+            requestId,
+            stage,
+            reason: 'INVALID_PASSWORD'
+          }
+        })
+
+        return {
+          kind: 'PASSWORD_INVALID' as const
+        }
+      }
+
+      const signoffId = randomUUID()
+
       try {
         await db.query(
           `INSERT INTO egas_workflowsignoff
-            (id,request_id,iteration_id,stagetask_id,stagecode,signeruser_id,signerrolesnapshot,
-             signernamesnapshot,signerjobtitlesnapshot,jobtitlewasoverridden,signatureasset_id,
-             signaturesha256snapshot,signedat,createdat)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
-          [signoffId, requestId, task.iterationId, task.id, stage, actor.userId, actor.activeRole,
-            identity.rows[0].displayName, signerJobTitle, signerJobTitle !== (identity.rows[0].jobTitle?.trim() ?? ''),
-            assetId, asset.rows[0].fileSha256]
+            (
+              id,
+              request_id,
+              iteration_id,
+              stagetask_id,
+              stagecode,
+              signeruser_id,
+              signerrolesnapshot,
+              signernamesnapshot,
+              signerjobtitlesnapshot,
+              jobtitlewasoverridden,
+              signatureasset_id,
+              signaturesha256snapshot,
+              signedat,
+              createdat
+            )
+           VALUES (
+             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+             CURRENT_TIMESTAMP,
+             CURRENT_TIMESTAMP
+           )`,
+          [
+            signoffId,
+            requestId,
+            task.iterationId,
+            task.id,
+            stage,
+            actor.userId,
+            actor.activeRole,
+            identity.rows[0].displayName,
+            signerJobTitle,
+            signerJobTitle !== storedJobTitle,
+            assetId,
+            asset.rows[0].fileSha256
+          ]
         )
       } catch (error) {
-        if (isUniqueViolation(error)) throw new AppError(409, 'This stage already has an immutable signoff', 'WORKFLOW_SIGNOFF_EXISTS')
+        if (isUniqueViolation(error)) {
+          throw new AppError(
+            409,
+            'This stage already has an immutable signoff',
+            'WORKFLOW_SIGNOFF_EXISTS'
+          )
+        }
+
         throw error
       }
-      await repo.insertAction(actor, requestId, task.iterationId, task.id, null, 'WORKFLOW_SIGNOFF_CAPTURED', { stage })
-      await recordWorkflowAudit(db, actor, evidence, {
-        requestId, iterationId: task.iterationId, routingUnitId: request.routingUnitId,
-        authorityAssignmentId: request.authorityAssignmentId, actionCode: 'WORKFLOW_SIGNOFF_CAPTURED',
-        fromStage: stage, toStage: stage, metadata: { stage, signatureAssetId: assetId }
-      })
-    })
-    const result = await this.pool.query<SignoffRow>(
-      `SELECT s.id,s.stagecode AS "stageCode",s.signeruser_id AS "signerUserId",
-              s.signerrolesnapshot AS "signerRole",s.signernamesnapshot AS "signerName",
-              s.signerjobtitlesnapshot AS "signerJobTitle",s.jobtitlewasoverridden AS "jobTitleWasOverridden",
-              s.signatureasset_id AS "signatureAssetId",s.signaturesha256snapshot AS "signatureSha256",
-              s.signedat AS "signedAt",i.iterationno AS "iterationNo"
-         FROM egas_workflowsignoff s JOIN egas_workflowiteration i ON i.id=s.iteration_id WHERE s.id=$1`, [signoffId]
+
+      await repo.insertAction(
+        actor,
+        requestId,
+        task.iterationId,
+        task.id,
+        null,
+        'WORKFLOW_SIGNOFF_CAPTURED',
+        { stage }
+      )
+
+      await recordWorkflowAudit(
+        db,
+        actor,
+        evidence,
+        {
+          requestId,
+          iterationId: task.iterationId,
+          routingUnitId: request.routingUnitId,
+          authorityAssignmentId: request.authorityAssignmentId,
+          actionCode: 'WORKFLOW_SIGNOFF_CAPTURED',
+          fromStage: stage,
+          toStage: stage,
+          metadata: {
+            stage,
+            signatureAssetId: assetId
+          }
+        }
+      )
+
+      return {
+        kind: 'SIGNED' as const,
+        signoffId
+      }
+    }
+  )
+
+  if (outcome.kind === 'PASSWORD_INVALID') {
+    throw new AppError(
+      401,
+      'Signature password is incorrect',
+      'SIGNATURE_PASSWORD_INVALID'
     )
-    return signoffView(result.rows[0]!)
   }
+
+  const result = await this.pool.query<SignoffRow>(
+    `SELECT s.id,
+            s.stagecode AS "stageCode",
+            s.signeruser_id AS "signerUserId",
+            s.signerrolesnapshot AS "signerRole",
+            s.signernamesnapshot AS "signerName",
+            s.signerjobtitlesnapshot AS "signerJobTitle",
+            s.jobtitlewasoverridden AS "jobTitleWasOverridden",
+            s.signatureasset_id AS "signatureAssetId",
+            s.signaturesha256snapshot AS "signatureSha256",
+            s.signedat AS "signedAt",
+            i.iterationno AS "iterationNo"
+       FROM egas_workflowsignoff s
+       JOIN egas_workflowiteration i
+         ON i.id = s.iteration_id
+      WHERE s.id = $1`,
+    [outcome.signoffId]
+  )
+
+  return signoffView(result.rows[0]!)
+}
 
   async signoffs(requestValue: unknown): Promise<Record<string, unknown>[]> {
     const requestId = uuid(requestValue, 'requestId')

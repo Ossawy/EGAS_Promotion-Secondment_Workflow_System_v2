@@ -15,29 +15,68 @@ import { workflowRouter } from './modules/workflow/routes.ts'
 
 export function createApp(pool: Pool, config: AppConfig): Express {
   const app = express()
+
+  const authenticationProvider = new LocalAuthenticationProvider(pool, config)
+
   app.disable('x-powered-by')
+
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.setHeader('Referrer-Policy', 'no-referrer')
     res.setHeader('X-Frame-Options', 'DENY')
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()')
-    if (_req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store')
-    if (config.nodeEnv === 'production' && config.auth.requireSecureCookie) {
-      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    res.setHeader(
+      'Permissions-Policy',
+      'camera=(), microphone=(), geolocation=(), payment=(), usb=()'
+    )
+
+    if (_req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store')
     }
+
+    if (
+      config.nodeEnv === 'production'
+      && config.auth.requireSecureCookie
+    ) {
+      res.setHeader(
+        'Strict-Transport-Security',
+        'max-age=31536000; includeSubDomains'
+      )
+    }
+
     next()
   })
-  app.use(express.json({ limit: '1mb', strict: true }))
+
+  app.use(express.json({
+    limit: '1mb',
+    strict: true
+  }))
+
   app.use(requestContext)
-  app.use(authenticate(new LocalAuthenticationProvider(pool, config), config))
+
+  app.use(
+    authenticate(authenticationProvider, config)
+  )
+
   app.use(healthRouter(pool))
+
   app.use('/api/auth', authRouter(pool, config))
   app.use('/api/admin', adminRouter(pool, config))
   app.use('/api/reference', referenceRouter(pool))
   app.use('/api/employee-data', employeeDataRouter(pool))
-  app.use('/api/workflow', workflowRouter(pool, config))
+
+  app.use(
+    '/api/workflow',
+    workflowRouter(
+      pool,
+      config,
+      authenticationProvider
+    )
+  )
+
   app.use('/api/notifications', notificationRouter(pool, config))
+
   app.use(notFound)
   app.use(errorHandler)
+
   return app
 }
