@@ -1,6 +1,8 @@
 import express, { Router } from 'express'
 import type { Pool } from 'pg'
 import type { AppConfig } from '../../config/env.ts'
+import type { AuthenticationProvider } from '../auth/authentication-provider.ts'
+import { DatabaseCurrentPasswordVerifier } from '../auth/current-password-verifier.ts'
 import { authContext, requireActiveRole } from '../../middleware/authorize.ts'
 import { csrfProtection } from '../../middleware/csrf.ts'
 import { evidence } from '../../middleware/request-context.ts'
@@ -53,15 +55,33 @@ function statusFilter(value: unknown): string | null {
   return value
 }
 
-export function workflowRouter(pool: Pool, config: AppConfig): Router {
-  const router = Router(); const workflow = new WorkflowService(pool); const tasks = new TaskService(pool)
-  const secondment = new SecondmentService(pool)
-  const promotion = new PromotionService(pool)
-  const controls = new WorkflowControlService(pool)
-  const signatures = new SignatureService(pool, config)
-  const pdf = new PdfService(pool, config)
-  const history = new HistoryService(pool)
-  const csrf = csrfProtection(pool, config)
+export function workflowRouter(
+  pool: Pool,
+  config: AppConfig,
+  authenticationProvider: AuthenticationProvider
+): Router {
+  const router = Router()
+const workflow = new WorkflowService(pool)
+const tasks = new TaskService(pool)
+
+const secondment = new SecondmentService(pool)
+const promotion = new PromotionService(pool)
+const controls = new WorkflowControlService(pool)
+
+const currentPasswordVerifier =
+  new DatabaseCurrentPasswordVerifier(authenticationProvider)
+
+const signatures =
+  new SignatureService(
+    pool,
+    config,
+    currentPasswordVerifier
+  )
+
+const pdf = new PdfService(pool, config)
+const history = new HistoryService(pool)
+
+const csrf = csrfProtection(pool, config)
 
   router.get('/history', requireActiveRole('EMPLOYEE_AFFAIRS','ORGANIZATION','APPROVING_AUTHORITY'), async (req, res) => {
     const routingUnitId = req.query.routingUnitId === undefined || req.query.routingUnitId === '' ? null : uuid(req.query.routingUnitId, 'routingUnitId')
@@ -114,10 +134,32 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     await workflow.detail(req.params.id, authContext(res))
     res.json(await signatures.signoffs(req.params.id))
   })
-  router.post('/requests/:id/signoff', requireActiveRole('EMPLOYEE_AFFAIRS','ORGANIZATION'), csrf, async (req, res) => {
-    const body = exactObject(req.body, ['signatureAssetId','jobTitle'])
-    res.status(201).json(await signatures.sign(req.params.id, body.signatureAssetId, body.jobTitle, authContext(res), evidence(res)))
-  })
+  router.post(
+  '/requests/:id/signoff',
+  requireActiveRole('EMPLOYEE_AFFAIRS', 'ORGANIZATION'),
+  csrf,
+  async (req, res) => {
+    const body = exactObject(
+      req.body,
+      [
+        'signatureAssetId',
+        'jobTitle',
+        'password'
+      ]
+    )
+
+    res.status(201).json(
+      await signatures.sign(
+        req.params.id,
+        body.signatureAssetId,
+        body.jobTitle,
+        body.password,
+        authContext(res),
+        evidence(res)
+      )
+    )
+  }
+)
   router.get('/requests/:id/documents', requireActiveRole('EMPLOYEE_AFFAIRS','ORGANIZATION','APPROVING_AUTHORITY'), async (req, res) => {
     await workflow.detail(req.params.id, authContext(res))
     res.json(await pdf.documents(req.params.id, authContext(res)))
