@@ -53,7 +53,7 @@ export class HistoryService {
                     WHERE removedat IS NULL GROUP BY request_id) cc ON cc.request_id=r.id
          LEFT JOIN egas_requestcandidate c ON c.request_id=r.id AND c.removedat IS NULL
          LEFT JOIN egas_stagetask scope_task ON scope_task.request_id=r.id AND scope_task.assigneduser_id=$2
-           AND (($1='ORGANIZATION' AND scope_task.stagecode IN ('P2','S2','S4'))
+           AND (($1='ORGANIZATION' AND scope_task.stagecode IN ('P2','P4O','S2','S4'))
              OR ($1='APPROVING_AUTHORITY' AND scope_task.stagecode IN ('P4','S3')))
         WHERE (
           ($1='EMPLOYEE_AFFAIRS' AND r.createdby_id=$2)

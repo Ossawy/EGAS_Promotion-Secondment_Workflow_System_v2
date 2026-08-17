@@ -89,11 +89,13 @@ export async function buildFormSnapshot(
   )
   const decisions = await db.query<Record<string, unknown>>(
     `SELECT d.requestcandidate_id AS "candidateId",d.decisiontype AS "decisionType",
-            d.targetjobtitle AS "targetJobTitle",d.notes,d.decidedat AS "decidedAt",
+        d.targetjobtitle AS "targetJobTitle",d.targetroutingunit_id AS "targetRoutingUnitId",
+        tru.namear AS "targetRoutingUnitName",d.notes,d.decidedat AS "decidedAt",
             u.displayname AS "decidedByName",u.username AS "decidedByUsername"
        FROM egas_promotiondecision d
        JOIN egas_requestcandidate c ON c.id=d.requestcandidate_id
        JOIN egas_useraccount u ON u.id=d.decidedby_id
+      LEFT JOIN egas_routingunit tru ON tru.id=d.targetroutingunit_id
       WHERE c.request_id=$1 AND d.iteration_id=$2 AND c.removedat IS NULL
       ORDER BY c.displayorder,d.id`, [requestId, iterationId]
   )

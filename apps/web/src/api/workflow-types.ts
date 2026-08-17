@@ -122,6 +122,8 @@ export interface PromotionDecision {
   iterationId: string
   decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
   targetJobTitle: string | null
+  targetRoutingUnitId: string | null
+  targetRoutingUnitName: string | null
   notes: string | null
   decidedById: string
   decidedByName: string

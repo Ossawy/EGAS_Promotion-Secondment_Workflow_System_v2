@@ -51,6 +51,8 @@ function actionLabel(code: unknown): string {
   const actions: Record<string, string> = {
     PROMOTION_P1_SUBMITTED: 'إرسال شئون العاملين', PROMOTION_P2_SUBMITTED: 'إرسال التنظيم',
     PROMOTION_P3_APPROVED: 'مراجعة شئون العاملين', PROMOTION_P4_APPROVED: 'قرار سلطة الاعتماد',
+    PROMOTION_P4_SENT_TO_ORGANIZATION: 'إحالة للتنظيم بعد قرار سلطة الاعتماد',
+    PROMOTION_P4O_CONFIRMED: 'تأكيد التنظيم بعد قرار سلطة الاعتماد',
     PROMOTION_P5_FINAL_APPROVED: 'اعتماد نهائي', SECONDMENT_S1_SUBMITTED: 'إرسال شئون العاملين',
     SECONDMENT_S2_SUBMITTED: 'إرسال التنظيم', SECONDMENT_S3_APPROVED: 'قرار سلطة الاعتماد',
     SECONDMENT_S4_CONFIRMED: 'تأكيد التنظيم', SECONDMENT_S5_FINAL_APPROVED: 'اعتماد نهائي',
@@ -192,6 +194,7 @@ export async function renderOfficialPdf(
       canvas.line('تقرير آخر ترقية', candidate.lastPromotionReport)
       canvas.line('قرار سلطة الاعتماد', decision?.decisionType === 'SAME_POSITION' ? 'الترقية على ذات الوظيفة' : decision?.decisionType === 'OTHER_POSITION' ? 'الترقية على وظيفة أخرى' : '—')
       canvas.line('الوظيفة المستهدفة', decision?.targetJobTitle)
+      canvas.line('وحدة المسار المستهدفة', decision?.targetRoutingUnitName)
       canvas.line('ملاحظات القرار', decision?.notes)
     } else {
       const positions = candidate.positions as Array<Record<string, unknown>>

@@ -11,7 +11,8 @@ import { initialStage, responsibleRole, type RequestRow, type WorkflowStage } fr
 import { WorkflowRepository } from './workflow-repository.ts'
 import { captureReceivedSnapshot } from './form-snapshot.ts'
 
-const returnableStages = new Set<WorkflowStage>(['P2','P3','P4','S2','S3','S4'])
+const returnableStages = new Set<WorkflowStage>(['P2','P3','P4','P4O','S2','S3','S4'])
+const rejectableStages = new Set<WorkflowStage>(['P2','P3','P4','S2','S3','S4'])
 
 export class WorkflowControlService {
   constructor(private readonly pool: Pool) {}
@@ -26,9 +27,10 @@ export class WorkflowControlService {
     const requestId = uuid(requestValue, 'requestId'); const reason = text(reasonValue, 'reason', 2000)
     return await withTransaction(this.pool, async db => {
       const repo = new WorkflowRepository(db); const row = await this.request(repo, requestId, true)
-      if (row.status !== 'IN_PROGRESS' || !returnableStages.has(row.currentStage)
+      const allowedStages = action === 'RETURN' ? returnableStages : rejectableStages
+      if (row.status !== 'IN_PROGRESS' || !allowedStages.has(row.currentStage)
         || actor.activeRole !== responsibleRole(row.currentStage)) {
-        throw new AppError(409, 'This stage does not permit return or rejection', 'WORKFLOW_ACTION_NOT_ALLOWED')
+        throw new AppError(409, 'This stage does not permit this action', 'WORKFLOW_ACTION_NOT_ALLOWED')
       }
       const task = await repo.currentTask(row)
       if (!task || task.assignedUserId !== actor.userId || !['OPEN','CLAIMED'].includes(task.taskStatus)) {
