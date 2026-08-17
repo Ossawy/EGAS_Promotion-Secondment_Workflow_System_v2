@@ -4,6 +4,8 @@ import type { WorkflowEmployeeSnapshot } from '../employee/employee-data-service
 import type { AuthContext } from '../auth/types.ts'
 import type { CandidateRow, RequestRow, WorkflowStage, WorkflowType } from './types.ts'
 
+const organizationStages: WorkflowStage[] = ['P2','P4O','S2','S4']
+
 function requestProjection(): string {
   return `r.id,r.requestnumber AS "requestNumber",r.requesttype AS "requestType",
     r.cycleyear AS "cycleYear",r.formmonth AS "formMonth",r.formyear AS "formYear",
@@ -360,8 +362,8 @@ export class WorkflowRepository {
          LEFT JOIN egas_useraccount claimant ON claimant.id=t.assigneduser_id
          LEFT JOIN (SELECT request_id,COUNT(*) AS candidatecount FROM egas_requestcandidate
                      WHERE removedat IS NULL GROUP BY request_id) cc ON cc.request_id=r.id
-        WHERE t.stagecode IN ('P2','S2','S4') AND t.taskstatus IN ('OPEN','CLAIMED')
-        ORDER BY t.openedat,t.id LIMIT $1 OFFSET $2`, [top, skip]
+        WHERE t.stagecode=ANY($3::varchar[]) AND t.taskstatus IN ('OPEN','CLAIMED')
+        ORDER BY t.openedat,t.id LIMIT $1 OFFSET $2`, [top, skip, organizationStages]
     )
     return result.rows.map(row => ({
       ...row,
@@ -407,12 +409,12 @@ export class WorkflowRepository {
       `UPDATE egas_stagetask
           SET taskstatus='CLAIMED',assigneduser_id=$2,claimedrolesnapshot='ORGANIZATION',
               claimedat=CURRENT_TIMESTAMP,version=version+1
-        WHERE id=$1 AND stagecode IN ('P2','S2','S4')
+        WHERE id=$1 AND stagecode=ANY($3::varchar[])
           AND taskstatus='OPEN' AND assigneduser_id IS NULL
       RETURNING id,iteration_id AS "iterationId",request_id AS "requestId",
                 stagecode AS "stageCode",taskstatus AS "taskStatus",
                 assigneduser_id AS "assignedUserId",claimedrolesnapshot AS "claimedRole",
-                claimedat AS "claimedAt",openedat AS "openedAt"`, [taskId, userId]
+                claimedat AS "claimedAt",openedat AS "openedAt"`, [taskId, userId, organizationStages]
     )
     return result.rows[0]
   }

@@ -19,6 +19,8 @@ type DecisionRow = {
   iterationId: string
   decisionType: 'SAME_POSITION'|'OTHER_POSITION'
   targetJobTitle: string | null
+  targetRoutingUnitId: string | null
+  targetRoutingUnitName: string | null
   notes: string | null
   decidedById: string
   decidedByName: string
@@ -33,8 +35,8 @@ export class PromotionService {
   constructor(private readonly pool: Pool) {}
 
   private async migrationReady(db: Queryable): Promise<void> {
-    const result = await db.query(`SELECT 1 FROM egas_schemamigration WHERE version='005_promotion_workflow_integrity'`)
-    if (!result.rows[0]) throw new AppError(409, 'Promotion workflow migration is required', 'WORKFLOW_MIGRATION_REQUIRED')
+    const result = await db.query(`SELECT 1 FROM egas_schemamigration WHERE version='007_promotion_cross_department_review'`)
+    if (!result.rows[0]) throw new AppError(409, 'Promotion cross-department migration is required', 'WORKFLOW_MIGRATION_REQUIRED')
   }
 
   private async request(repo: WorkflowRepository, value: unknown, lock = false): Promise<RequestRow> {
@@ -44,7 +46,7 @@ export class PromotionService {
   }
 
   private assertActor(row: RequestRow, actor: AuthContext, stage: WorkflowStage): void {
-    const role = stage === 'P2' ? 'ORGANIZATION' : stage === 'P4' ? 'APPROVING_AUTHORITY' : 'EMPLOYEE_AFFAIRS'
+    const role = stage === 'P2' || stage === 'P4O' ? 'ORGANIZATION' : stage === 'P4' ? 'APPROVING_AUTHORITY' : 'EMPLOYEE_AFFAIRS'
     if (actor.activeRole !== role || ((stage === 'P1' || stage === 'P3' || stage === 'P5') && row.createdById !== actor.userId)) {
       throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
     }
@@ -70,10 +72,12 @@ export class PromotionService {
     await this.canRead(repo, row, actor)
     const result = await this.pool.query<DecisionRow>(
       `SELECT d.id,d.requestcandidate_id AS "candidateId",d.iteration_id AS "iterationId",
-              d.decisiontype AS "decisionType",d.targetjobtitle AS "targetJobTitle",d.notes,
+              d.decisiontype AS "decisionType",d.targetjobtitle AS "targetJobTitle",
+              d.targetroutingunit_id AS "targetRoutingUnitId",tru.namear AS "targetRoutingUnitName",d.notes,
               d.decidedby_id AS "decidedById",u.displayname AS "decidedByName",d.decidedat AS "decidedAt"
        FROM egas_promotiondecision d JOIN egas_requestcandidate c ON c.id=d.requestcandidate_id
        JOIN egas_workflowiteration i ON i.id=d.iteration_id JOIN egas_useraccount u ON u.id=d.decidedby_id
+       LEFT JOIN egas_routingunit tru ON tru.id=d.targetroutingunit_id
        WHERE c.request_id=$1 AND c.removedat IS NULL AND i.request_id=$1 AND i.iterationno=$2
        ORDER BY c.displayorder,d.decidedat,d.id`, [row.id, Number(row.currentIterationNo)])
     return result.rows.map(decisionView)
@@ -119,30 +123,41 @@ export class PromotionService {
       throw new AppError(400, 'decisionType is invalid', 'WORKFLOW_VALIDATION_FAILED')
     }
     const targetJobTitle = decisionType === 'OTHER_POSITION' ? text(input.targetJobTitle, 'targetJobTitle', 500) : null
+    const targetRoutingUnitId = decisionType === 'OTHER_POSITION' ? uuid(input.targetRoutingUnitId, 'targetRoutingUnitId') : null
     const notes = optionalText(input.notes, 'notes', 2000)
     await withTransaction(this.pool, async db => {
       await this.migrationReady(db); const repo = new WorkflowRepository(db); const row = await this.request(repo, requestId, true)
       this.assertActor(row, actor, 'P4'); const task = await this.task(repo, row, actor, 'P4')
       if (!await repo.candidate(row.id, candidateId)) throw new AppError(404, 'Candidate not found', 'WORKFLOW_CANDIDATE_NOT_FOUND')
+      if (decisionType === 'OTHER_POSITION') {
+        const targetRouting = await db.query<{ id: string }>(
+          `SELECT id FROM egas_routingunit WHERE id=$1 AND isactive=TRUE`,
+          [targetRoutingUnitId]
+        )
+        if (!targetRouting.rows[0]) {
+          throw new AppError(400, 'Active target routing unit not found', 'WORKFLOW_TARGET_ROUTING_INVALID')
+        }
+      }
       const existing = await db.query<{ id: string }>(
         `SELECT id FROM egas_promotiondecision WHERE requestcandidate_id=$1 AND iteration_id=$2`, [candidateId, task.iterationId])
       const decisionId = existing.rows[0]?.id ?? randomUUID()
       if (existing.rows[0]) {
         await db.query(
-          `UPDATE egas_promotiondecision SET decisiontype=$2,targetjobtitle=$3,notes=$4,
-                  decidedby_id=$5,decidedat=CURRENT_TIMESTAMP WHERE id=$1`,
-          [decisionId, decisionType, targetJobTitle, notes, actor.userId])
+          `UPDATE egas_promotiondecision SET decisiontype=$2,targetjobtitle=$3,targetroutingunit_id=$4,notes=$5,
+                  decidedby_id=$6,decidedat=CURRENT_TIMESTAMP WHERE id=$1`,
+          [decisionId, decisionType, targetJobTitle, targetRoutingUnitId, notes, actor.userId])
       } else {
         await db.query(
           `INSERT INTO egas_promotiondecision
-            (id,requestcandidate_id,iteration_id,decisiontype,targetjobtitle,notes,decidedby_id,decidedat)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP)`,
-          [decisionId, candidateId, task.iterationId, decisionType, targetJobTitle, notes, actor.userId])
+            (id,requestcandidate_id,iteration_id,decisiontype,targetjobtitle,targetroutingunit_id,notes,decidedby_id,decidedat)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP)`,
+          [decisionId, candidateId, task.iterationId, decisionType, targetJobTitle, targetRoutingUnitId, notes, actor.userId])
       }
       await repo.insertAction(actor, row.id, task.iterationId, task.id, candidateId, 'PROMOTION_DECISION_RECORDED', { decisionType })
       await recordWorkflowAudit(db, actor, evidence, { requestId: row.id, iterationId: task.iterationId, candidateId,
         routingUnitId: row.routingUnitId, authorityAssignmentId: row.authorityAssignmentId,
-        actionCode: 'PROMOTION_DECISION_RECORDED', fromStage: 'P4', toStage: 'P4', metadata: { decisionType } })
+        actionCode: 'PROMOTION_DECISION_RECORDED', fromStage: 'P4', toStage: 'P4',
+        metadata: targetRoutingUnitId ? { decisionType, targetRoutingUnitId } : { decisionType } })
     })
     return await this.decisions(requestId, actor)
   }
@@ -234,18 +249,132 @@ export class PromotionService {
   async approveP4(requestValue: unknown, actor: AuthContext, evidence: RequestEvidence): Promise<Record<string, unknown>> {
     const requestId = uuid(requestValue, 'requestId')
     return await withTransaction(this.pool, async db => {
+      await this.migrationReady(db)
       const repo = new WorkflowRepository(db); const row = await this.request(repo, requestId, true); this.assertActor(row, actor, 'P4')
       const task = await this.task(repo, row, actor, 'P4')
-      const decisions = await db.query(
-        `SELECT d.requestcandidate_id FROM egas_promotiondecision d JOIN egas_requestcandidate c ON c.id=d.requestcandidate_id
+      const decisions = await db.query<{ candidateId: string, decisionType: 'SAME_POSITION'|'OTHER_POSITION', targetRoutingUnitId: string | null }>(
+        `SELECT d.requestcandidate_id AS "candidateId",d.decisiontype AS "decisionType",
+                d.targetroutingunit_id AS "targetRoutingUnitId"
+           FROM egas_promotiondecision d JOIN egas_requestcandidate c ON c.id=d.requestcandidate_id
          WHERE c.request_id=$1 AND c.removedat IS NULL AND d.iteration_id=$2`, [row.id, task.iterationId])
       if (Number(row.candidateCount) < 1 || decisions.rows.length !== Number(row.candidateCount)) {
         throw new AppError(409, 'A promotion decision is required for every candidate', 'WORKFLOW_DECISION_INCOMPLETE')
       }
-      await this.advance(db, repo, row, task, actor, 'P4', 'P5', row.createdById, 'PROMOTION_P4_APPROVED', evidence)
-      return { requestId: row.id, status: 'IN_PROGRESS', currentStage: 'P5' }
+      const candidates = await db.query<{ id: string }>(
+        `SELECT id FROM egas_requestcandidate WHERE request_id=$1 AND removedat IS NULL`, [row.id]
+      )
+      const candidateIds = new Set(candidates.rows.map(item => item.id))
+      if (candidateIds.size !== decisions.rows.length) {
+        throw new AppError(409, 'A promotion decision is required for every candidate', 'WORKFLOW_DECISION_INCOMPLETE')
+      }
+      for (const decision of decisions.rows) {
+        if (!candidateIds.has(decision.candidateId)) {
+          throw new AppError(409, 'A promotion decision is required for every candidate', 'WORKFLOW_DECISION_INCOMPLETE')
+        }
+        if (decision.decisionType === 'OTHER_POSITION' && !decision.targetRoutingUnitId) {
+          throw new AppError(409, 'Target routing unit is required for OTHER_POSITION', 'WORKFLOW_DECISION_INCOMPLETE')
+        }
+      }
+      const requiresOrganizationReview = decisions.rows.some(decision =>
+        decision.decisionType === 'OTHER_POSITION' && decision.targetRoutingUnitId !== row.routingUnitId
+      )
+      if (!requiresOrganizationReview) {
+        await this.advance(db, repo, row, task, actor, 'P4', 'P5', row.createdById, 'PROMOTION_P4_APPROVED', evidence)
+        return { requestId: row.id, status: 'IN_PROGRESS', currentStage: 'P5' }
+      }
+      await this.advance(db, repo, row, task, actor, 'P4', 'P4O', null, 'PROMOTION_P4_SENT_TO_ORGANIZATION', evidence)
+      const orgUsers = await db.query<{ id: string }>(
+        `SELECT DISTINCT u.id FROM egas_useraccount u JOIN egas_useraccountrole r ON r.user_id=u.id
+         WHERE u.isactive=TRUE AND r.role='ORGANIZATION' AND r.isactive=TRUE ORDER BY u.id`
+      )
+      for (const recipient of orgUsers.rows) {
+        await createNotification(db, {
+          recipientUserId: recipient.id,
+          requestId: row.id,
+          type: 'ORGANIZATION_QUEUE_ACTIONABLE',
+          titleAr: 'طلب ترقية جديد في قائمة التنظيم',
+          bodyAr: 'يمكن استلام الطلب من قائمة المهام غير المسندة.'
+        })
+      }
+      return { requestId: row.id, status: 'IN_PROGRESS', currentStage: 'P4O' }
     })
   }
+
+  async confirmP4O(
+  requestValue: unknown,
+  actor: AuthContext,
+  evidence: RequestEvidence
+): Promise<Record<string, unknown>> {
+  const requestId = uuid(requestValue, 'requestId')
+
+  return await withTransaction(this.pool, async db => {
+    await this.migrationReady(db)
+
+    const repo = new WorkflowRepository(db)
+    const row = await this.request(repo, requestId, true)
+
+    this.assertActor(row, actor, 'P4O')
+
+    const task = await this.task(repo, row, actor, 'P4O')
+
+    if (task.taskStatus !== 'CLAIMED') {
+      throw new AppError(
+        409,
+        'Organization task must be claimed first',
+        'WORKFLOW_TASK_UNAVAILABLE'
+      )
+    }
+
+    const decisions = await db.query<{
+      decisionType: string
+      targetRoutingUnitId: string | null
+    }>(
+      `SELECT d.decisiontype AS "decisionType",
+              d.targetroutingunit_id AS "targetRoutingUnitId"
+         FROM egas_promotiondecision d
+         JOIN egas_requestcandidate c
+           ON c.id=d.requestcandidate_id
+        WHERE c.request_id=$1
+          AND c.removedat IS NULL
+          AND d.iteration_id=$2`,
+      [row.id, task.iterationId]
+    )
+
+    const hasCrossRoutingDecision = decisions.rows.some(
+      decision =>
+        decision.decisionType === 'OTHER_POSITION'
+        && decision.targetRoutingUnitId !== null
+        && decision.targetRoutingUnitId !== row.routingUnitId
+    )
+
+    if (!hasCrossRoutingDecision) {
+      throw new AppError(
+        409,
+        'Cross-routing promotion decision is required',
+        'WORKFLOW_ACTION_NOT_ALLOWED'
+      )
+    }
+
+    await this.advance(
+      db,
+      repo,
+      row,
+      task,
+      actor,
+      'P4O',
+      'P5',
+      row.createdById,
+      'PROMOTION_P4O_CONFIRMED',
+      evidence
+    )
+
+    return {
+      requestId: row.id,
+      status: 'IN_PROGRESS',
+      currentStage: 'P5'
+    }
+  })
+}
 
   async approveP5(requestValue: unknown, actor: AuthContext, evidence: RequestEvidence): Promise<Record<string, unknown>> {
     const requestId = uuid(requestValue, 'requestId')

@@ -208,7 +208,7 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     res.json(await promotion.prepareCandidate(req.params.id, req.params.candidateId, body, authContext(res), evidence(res)))
   })
   router.put('/requests/:id/promotion/candidates/:candidateId/decision', requireActiveRole('APPROVING_AUTHORITY'), csrf, async (req, res) => {
-    const body = exactObject(req.body, ['decisionType','targetJobTitle','notes'])
+    const body = exactObject(req.body, ['decisionType','targetJobTitle','targetRoutingUnitId','notes'])
     res.json(await promotion.decide(req.params.id, req.params.candidateId, body, authContext(res), evidence(res)))
   })
   router.post('/requests/:id/promotion/submit-p1', requireActiveRole('EMPLOYEE_AFFAIRS'), csrf, async (req, res) => {
@@ -222,6 +222,9 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
   })
   router.post('/requests/:id/promotion/approve-p4', requireActiveRole('APPROVING_AUTHORITY'), csrf, async (req, res) => {
     exactObject(req.body ?? {}, []); res.json(await promotion.approveP4(req.params.id, authContext(res), evidence(res)))
+  })
+  router.post('/requests/:id/promotion/confirm-p4o', requireActiveRole('ORGANIZATION'), csrf, async (req, res) => {
+    exactObject(req.body ?? {}, []); res.json(await promotion.confirmP4O(req.params.id, authContext(res), evidence(res)))
   })
   router.post('/requests/:id/promotion/final-approve-p5', requireActiveRole('EMPLOYEE_AFFAIRS'), csrf, async (req, res) => {
     exactObject(req.body ?? {}, []); res.json(await promotion.approveP5(req.params.id, authContext(res), evidence(res)))

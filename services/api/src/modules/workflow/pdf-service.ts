@@ -266,7 +266,7 @@ export class PdfService {
       const owned = await this.pool.query(`SELECT 1 FROM egas_workflowrequest WHERE id=$1 AND createdby_id=$2`, [requestId, actor.userId])
       if (owned.rows[0]) return
     } else {
-      const stages = actor.activeRole === 'ORGANIZATION' ? ['P2','S2','S4']
+      const stages = actor.activeRole === 'ORGANIZATION' ? ['P2','P4O','S2','S4']
         : actor.activeRole === 'APPROVING_AUTHORITY' ? ['P4','S3'] : []
       if (stages.length) {
         const participated = await this.pool.query(

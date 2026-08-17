@@ -66,6 +66,10 @@ export async function isolatedPool(): Promise<Pool> {
     new URL('../../src/db/migrations/006_pdf_evidence_freeze.sql', import.meta.url), 'utf8'
   )
   database.public.none(pdfEvidence.split('CREATE OR REPLACE FUNCTION egas_protect_frozen_pdf_document')[0]!)
+  const promotionCrossRouting = await readFile(
+    new URL('../../src/db/migrations/007_promotion_cross_department_review.sql', import.meta.url), 'utf8'
+  )
+  database.public.none(promotionCrossRouting.replace(/\s+DEFERRABLE INITIALLY DEFERRED/gi, ''))
   const adapter = database.adapters.createPg()
   const pool = new adapter.Pool() as unknown as Pool
   await pool.query(
@@ -74,7 +78,8 @@ export async function isolatedPool(): Promise<Pool> {
             ('003_phase3a_workflow_draft_foundation',$1,CURRENT_TIMESTAMP),
             ('004_secondment_workflow_integrity',$1,CURRENT_TIMESTAMP),
             ('005_promotion_workflow_integrity',$1,CURRENT_TIMESTAMP),
-            ('006_pdf_evidence_freeze',$1,CURRENT_TIMESTAMP)`, ['0'.repeat(64)]
+            ('006_pdf_evidence_freeze',$1,CURRENT_TIMESTAMP),
+            ('007_promotion_cross_department_review',$1,CURRENT_TIMESTAMP)`, ['0'.repeat(64)]
   )
   return pool
 }

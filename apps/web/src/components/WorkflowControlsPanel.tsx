@@ -23,10 +23,11 @@ export function WorkflowControlsPanel({ detail }: { detail: WorkflowRequestDetai
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isOriginator = user?.activeRole === 'EMPLOYEE_AFFAIRS' && user.userId === detail.createdBy.id
-  const canReturn = detail.status === 'IN_PROGRESS' && detail.actionable && ['P2','P3','P4','S2','S3','S4'].includes(detail.currentStage)
+  const canReturn = detail.status === 'IN_PROGRESS' && detail.actionable && ['P2','P3','P4','P4O','S2','S3','S4'].includes(detail.currentStage)
+  const canReject = detail.status === 'IN_PROGRESS' && detail.actionable && ['P2','P3','P4','S2','S3','S4'].includes(detail.currentStage)
   const canRecall = isOriginator && ['DRAFT','IN_PROGRESS'].includes(detail.status)
   const returned = isOriginator && detail.status === 'RETURNED'
-  if (!canReturn && !canRecall && !returned) return null
+  if (!canReturn && !canReject && !canRecall && !returned) return null
 
   function choose(control: Control): void { setSelected(control); setReason(''); setError(null) }
   async function execute(event: React.FormEvent): Promise<void> {
@@ -45,7 +46,8 @@ export function WorkflowControlsPanel({ detail }: { detail: WorkflowRequestDetai
   return <section className="panel workflow-controls">
     <div className="panel__header"><div><h2>إجراءات مسار الطلب</h2><p>كل رجوع أو رفض أو استدعاء يحفظ السبب والدورة السابقة كاملة.</p></div><Undo2 /></div>
     <div className="workflow-control-buttons">
-      {canReturn && <><button type="button" className="button button--secondary" onClick={() => choose('return-for-correction')}><CornerUpRight size={17} /> إرجاع للتصحيح</button><button type="button" className="button button--danger" onClick={() => choose('reject')}><Ban size={17} /> رفض</button></>}
+      {canReturn && <button type="button" className="button button--secondary" onClick={() => choose('return-for-correction')}><CornerUpRight size={17} /> إرجاع للتصحيح</button>}
+      {canReject && <button type="button" className="button button--danger" onClick={() => choose('reject')}><Ban size={17} /> رفض</button>}
       {canRecall && <button type="button" className="button button--secondary" onClick={() => choose('recall')}><Undo2 size={17} /> استدعاء وبدء دورة جديدة</button>}
       {returned && <><button type="button" className="button button--primary" onClick={() => choose('restart')}><RotateCcw size={17} /> إعادة البدء</button><button type="button" className="button button--danger" onClick={() => choose('cancel-returned')}><Ban size={17} /> إلغاء نهائي</button></>}
     </div>
