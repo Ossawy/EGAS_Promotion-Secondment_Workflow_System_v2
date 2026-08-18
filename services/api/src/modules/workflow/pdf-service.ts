@@ -8,8 +8,20 @@ import type { Queryable } from '../../db/types.ts'
 import { AppError } from '../../shared/errors.ts'
 import { uuid } from '../../shared/validation.ts'
 import type { AuthContext } from '../auth/types.ts'
-import { buildFormSnapshot, PDF_TEMPLATE_VERSION, snapshotSha256, type FormSnapshot } from './form-snapshot.ts'
-import { renderAuditPdf, renderOfficialPdf, type AuditPdfEntry } from './pdf-renderer.ts'
+import {
+  buildFormSnapshot,
+  PDF_TEMPLATE_V1,
+  PDF_TEMPLATE_V2,
+  PDF_TEMPLATE_VERSION,
+  snapshotSha256,
+  type FormSnapshot
+} from './form-snapshot.ts'
+import {
+  renderAuditPdf,
+  renderOfficialPdfV1,
+  renderOfficialPdfV2,
+  type AuditPdfEntry
+} from './pdf-renderer.ts'
 import { SignatureService } from './signature-service.ts'
 
 type FrozenDocumentRow = {
@@ -20,6 +32,7 @@ type FrozenDocumentRow = {
   receivedSnapshotId: string | null
   snapshotJson: FormSnapshot
   snapshotSha256: string
+  templateVersion: string
   storageKey: string | null
   fileSha256: string | null
   fileSizeBytes: string | number | null
@@ -132,18 +145,22 @@ export class PdfService {
     )
     if (!context.rows[0]) throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
     const snapshot = await buildFormSnapshot(this.pool, requestId, context.rows[0].iterationId, 'DRAFT', null)
-    const buffer = await this.render(snapshot)
-    await this.log(actor, 'FORM', 'DRAFT', requestId, null, context.rows[0].routingUnitId, buffer)
+    const buffer = await this.render(
+      snapshot,
+      PDF_TEMPLATE_VERSION
+    )
+    await this.log(actor, 'FORM', 'DRAFT', requestId, null, context.rows[0].routingUnitId, PDF_TEMPLATE_VERSION, buffer)
     return { buffer, filename: `EGAS-${context.rows[0].requestNumber}-draft.pdf`, state: 'DRAFT' }
   }
 
   async received(requestValue: unknown, snapshotValue: unknown, actor: AuthContext): Promise<PdfResult> {
     const requestId = uuid(requestValue, 'requestId'); const receivedSnapshotId = uuid(snapshotValue, 'snapshotId')
-    const source = await this.pool.query<{ iterationId: string, snapshotJson: FormSnapshot, snapshotSha256: string, requestNumber: string }>(
+    const source = await this.pool.query<{ iterationId: string, snapshotJson: FormSnapshot, snapshotSha256: string, templateVersion: string, requestNumber: string }>(
       `SELECT s.iteration_id AS "iterationId",s.snapshotjson AS "snapshotJson",s.snapshotsha256 AS "snapshotSha256",
-              r.requestnumber AS "requestNumber"
-         FROM egas_stagereceivedsnapshot s JOIN egas_workflowrequest r ON r.id=s.request_id
-        WHERE s.id=$1 AND s.request_id=$2 AND s.recipientuser_id=$3 AND s.recipientrolesnapshot=$4`,
+               s.templateversion AS "templateVersion",
+               r.requestnumber AS "requestNumber"
+          FROM egas_stagereceivedsnapshot s JOIN egas_workflowrequest r ON r.id=s.request_id
+         WHERE s.id=$1 AND s.request_id=$2 AND s.recipientuser_id=$3 AND s.recipientrolesnapshot=$4`,
       [receivedSnapshotId, requestId, actor.userId, actor.activeRole]
     )
     if (!source.rows[0]) throw new AppError(404, 'Received-stage PDF not found', 'PDF_RECEIVED_NOT_FOUND')
@@ -159,13 +176,39 @@ export class PdfService {
       if (existing.rows[0]) return existing.rows[0].id
       const id = randomUUID()
       await db.query(
-        `INSERT INTO egas_frozenpdfdocument
-          (id,request_id,iteration_id,documentstate,stagereceivedsnapshot_id,snapshotjson,
-           snapshotsha256,templateversion,frozenat)
-         VALUES ($1,$2,$3,'RECEIVED',$4,$5::jsonb,$6,$7,CURRENT_TIMESTAMP)`,
-        [id, requestId, source.rows[0]!.iterationId, receivedSnapshotId,
-          JSON.stringify(snapshot), source.rows[0]!.snapshotSha256, PDF_TEMPLATE_VERSION]
-      )
+  `INSERT INTO egas_frozenpdfdocument
+    (
+      id,
+      request_id,
+      iteration_id,
+      documentstate,
+      stagereceivedsnapshot_id,
+      snapshotjson,
+      snapshotsha256,
+      templateversion,
+      frozenat
+    )
+   VALUES (
+      $1,
+      $2,
+      $3,
+      'RECEIVED',
+      $4,
+      $5::jsonb,
+      $6,
+      $7,
+      CURRENT_TIMESTAMP
+   )`,
+  [
+    id,
+    requestId,
+    source.rows[0]!.iterationId,
+    receivedSnapshotId,
+    JSON.stringify(snapshot),
+    source.rows[0]!.snapshotSha256,
+    source.rows[0]!.templateVersion
+  ]
+)
       return id
     })
     const result = await this.serveFrozen(documentId, actor)
@@ -197,7 +240,16 @@ export class PdfService {
     const buffer = await this.limiter.run(() => renderAuditPdf(
       `سجل تدقيق الطلب ${request.rows[0]!.requestNumber}`, request.rows[0]!.currentStage, entries, this.config.pdf.maxOutputBytes
     ))
-    await this.log(actor, 'AUDIT_LOG', 'DRAFT', requestId, null, request.rows[0].routingUnitId, buffer)
+    await this.log(
+      actor,
+      'AUDIT_LOG',
+      'DRAFT',
+      requestId,
+      null,
+      request.rows[0].routingUnitId,
+      PDF_TEMPLATE_VERSION,
+      buffer
+    )
     return { buffer, filename: `EGAS-${request.rows[0].requestNumber}-audit.pdf`, state: 'AUDIT_LOG' }
   }
 
@@ -288,7 +340,7 @@ export class PdfService {
     }
     const buffer = await promise
     const row = await this.document(documentId)
-    await this.log(actor, 'FORM', row.documentState, row.requestId, row.receivedSnapshotId, row.routingUnitId, buffer)
+    await this.log(actor, 'FORM', row.documentState, row.requestId, row.receivedSnapshotId, row.routingUnitId, row.templateVersion, buffer)
     return { buffer }
   }
 
@@ -303,7 +355,7 @@ export class PdfService {
         if (sha256(content) !== row.fileSha256) throw new AppError(409, 'Frozen PDF file checksum failed', 'PDF_FILE_CHECKSUM_FAILED')
         return content
       }
-      const content = await this.render(snapshot)
+      const content = await this.render(snapshot, row.templateVersion)
       const storageKey = `${randomUUID()}.pdf`; const target = this.controlledPath(storageKey)
       await mkdir(this.storageRoot, { recursive: true, mode: 0o700 })
       await writeFile(target, content, { flag: 'wx', mode: 0o600 })
@@ -321,23 +373,60 @@ export class PdfService {
     })
   }
 
-  private async render(snapshot: FormSnapshot): Promise<Buffer> {
+  private async render(
+    snapshot: FormSnapshot,
+    templateVersion: string
+  ): Promise<Buffer> {
+    /*
+     * V2 is intentionally NOT enabled yet.
+     *
+     * Once the V2 renderer exists, this becomes the
+     * V1/V2 dispatcher.
+     */
     const images = new Map<string, Buffer>()
+
     for (const signoff of snapshot.signoffs) {
       const assetId = String(signoff.signatureAssetId ?? '')
       const hash = String(signoff.signatureSha256 ?? '')
       if (assetId && hash && !images.has(assetId)) images.set(assetId, await this.signatures.verifiedEvidenceContent(assetId, hash))
     }
-    return await this.limiter.run(() => renderOfficialPdf(snapshot, images, this.config.pdf.maxOutputBytes))
+
+    if (templateVersion === PDF_TEMPLATE_V1) {
+      return await this.limiter.run(
+        () =>
+          renderOfficialPdfV1(
+            snapshot,
+            images,
+            this.config.pdf.maxOutputBytes
+          )
+      )
+    }
+
+    if (templateVersion === PDF_TEMPLATE_V2) {
+      return await this.limiter.run(
+        () =>
+          renderOfficialPdfV2(
+            snapshot,
+            images,
+            this.config.pdf.maxOutputBytes
+          )
+      )
+    }
+
+    throw new AppError(
+      500,
+      `Unsupported PDF template version: ${templateVersion}`,
+      'PDF_TEMPLATE_UNSUPPORTED'
+    )
   }
 
   private async document(id: string, db: Queryable = this.pool, lock = false): Promise<FrozenDocumentRow> {
     const result = await db.query<FrozenDocumentRow>(
       `SELECT d.id,d.request_id AS "requestId",d.iteration_id AS "iterationId",d.documentstate AS "documentState",
               d.stagereceivedsnapshot_id AS "receivedSnapshotId",d.snapshotjson AS "snapshotJson",
-              d.snapshotsha256 AS "snapshotSha256",d.storagekey AS "storageKey",d.filesha256 AS "fileSha256",
+              d.snapshotsha256 AS "snapshotSha256",d.templateversion AS "templateVersion",d.storagekey AS "storageKey",d.filesha256 AS "fileSha256",
               d.filesizebytes AS "fileSizeBytes",r.routingunit_id AS "routingUnitId",r.requestnumber AS "requestNumber"
-         FROM egas_frozenpdfdocument d JOIN egas_workflowrequest r ON r.id=d.request_id WHERE d.id=$1${lock ? ' FOR UPDATE' : ''}`,
+          FROM egas_frozenpdfdocument d JOIN egas_workflowrequest r ON r.id=d.request_id WHERE d.id=$1${lock ? ' FOR UPDATE' : ''}`,
       [id]
     )
     if (!result.rows[0]) throw new AppError(404, 'PDF evidence not found', 'PDF_NOT_FOUND')
@@ -351,15 +440,16 @@ export class PdfService {
     requestId: string,
     receivedSnapshotId: string | null,
     routingUnitId: string | null,
+    templateVersion: string,
     content: Buffer
   ): Promise<void> {
     await this.pool.query(
       `INSERT INTO egas_pdfgenerationlog
         (id,generatedby_id,documenttype,documentstate,request_id,stagereceivedsnapshot_id,
          routingunit_id,templateversion,filesha256,generatedat)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP)`,
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP)`,
       [randomUUID(), actor.userId, documentType, documentState, requestId, receivedSnapshotId,
-        routingUnitId, PDF_TEMPLATE_VERSION, sha256(content)]
+        routingUnitId, templateVersion, sha256(content)]
     )
   }
 

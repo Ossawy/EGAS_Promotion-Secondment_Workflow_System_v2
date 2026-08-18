@@ -4,7 +4,11 @@ import { withTransaction } from '../../db/transaction.ts'
 import type { Queryable } from '../../db/types.ts'
 import type { RequestEvidence } from '../../middleware/request-context.ts'
 import { AppError } from '../../shared/errors.ts'
-import { text, uuid } from '../../shared/validation.ts'
+import {
+  optionalText,
+  text,
+  uuid
+} from '../../shared/validation.ts'
 import { recordWorkflowAudit } from '../audit/workflow-audit.ts'
 import type { AuthContext } from '../auth/types.ts'
 import { createNotification } from '../notifications/notification-service.ts'
@@ -132,6 +136,230 @@ export class SecondmentService {
     })
     return { requestId, candidateId, jobCategoryCode: categoryCode }
   }
+
+  async prepareCandidate(
+  requestValue: unknown,
+  candidateValue: unknown,
+  input: Record<string, unknown>,
+  actor: AuthContext,
+  evidence: RequestEvidence
+): Promise<Record<string, unknown>> {
+  const requestId =
+    uuid(
+      requestValue,
+      'requestId'
+    )
+
+  const candidateId =
+    uuid(
+      candidateValue,
+      'candidateId'
+    )
+
+  const categoryCode =
+    text(
+      input.jobCategoryCode,
+      'jobCategoryCode',
+      40
+    )
+
+  const lastPromotionReport =
+    optionalText(
+      input.lastPromotionReport,
+      'lastPromotionReport',
+      1000
+    )
+
+  await withTransaction(
+    this.pool,
+    async db => {
+      const repo =
+        new WorkflowRepository(db)
+
+      const row =
+        await this.request(
+          repo,
+          requestId,
+          true
+        )
+
+      this.assertActor(
+        row,
+        actor,
+        'S2'
+      )
+
+      const task =
+        await this.task(
+          repo,
+          row,
+          actor,
+          'S2'
+        )
+
+      if (
+        task.taskStatus !==
+        'CLAIMED'
+      ) {
+        throw new AppError(
+          409,
+          'Organization task must be claimed first',
+          'WORKFLOW_TASK_UNAVAILABLE'
+        )
+      }
+
+      const category =
+        await db.query<{
+          displayOrder: number
+        }>(
+          `SELECT displayorder AS "displayOrder"
+             FROM egas_jobcategoryreference
+            WHERE code=$1
+              AND isactive=TRUE`,
+          [categoryCode]
+        )
+
+      if (
+        !category.rows[0]
+      ) {
+        throw new AppError(
+          400,
+          'Active job category not found',
+          'WORKFLOW_VALIDATION_FAILED'
+        )
+      }
+
+      if (
+        !await repo.candidate(
+          row.id,
+          candidateId
+        )
+      ) {
+        throw new AppError(
+          404,
+          'Candidate not found',
+          'WORKFLOW_CANDIDATE_NOT_FOUND'
+        )
+      }
+
+      let sectionId =
+        (
+          await db.query<{
+            id: string
+          }>(
+            `SELECT id
+               FROM egas_requestformsection
+              WHERE request_id=$1
+                AND jobcategory_code=$2`,
+            [
+              row.id,
+              categoryCode
+            ]
+          )
+        ).rows[0]?.id
+
+      if (!sectionId) {
+        sectionId =
+          randomUUID()
+
+        await db.query(
+          `INSERT INTO egas_requestformsection
+            (
+              id,
+              request_id,
+              jobcategory_code,
+              displayorder,
+              createdby_id,
+              createdat
+            )
+           VALUES (
+             $1,$2,$3,$4,$5,
+             CURRENT_TIMESTAMP
+           )`,
+          [
+            sectionId,
+            row.id,
+            categoryCode,
+            Number(
+              category.rows[0]
+                .displayOrder
+            ),
+            actor.userId
+          ]
+        )
+      }
+
+      await db.query(
+        `UPDATE egas_requestcandidate
+            SET formsection_id=$2,
+                lastpromotionreport=$3,
+                version=version+1
+          WHERE id=$1`,
+        [
+          candidateId,
+          sectionId,
+          lastPromotionReport
+        ]
+      )
+
+      await repo.insertAction(
+        actor,
+        row.id,
+        task.iterationId,
+        task.id,
+        candidateId,
+        'SECONDMENT_PREPARATION_UPDATED',
+        {
+          jobCategoryCode:
+            categoryCode
+        }
+      )
+
+      await recordWorkflowAudit(
+        db,
+        actor,
+        evidence,
+        {
+          requestId:
+            row.id,
+
+          iterationId:
+            task.iterationId,
+
+          candidateId,
+
+          routingUnitId:
+            row.routingUnitId,
+
+          authorityAssignmentId:
+            row.authorityAssignmentId,
+
+          actionCode:
+            'SECONDMENT_PREPARATION_UPDATED',
+
+          fromStage:
+            'S2',
+
+          toStage:
+            'S2',
+
+          metadata: {
+            jobCategoryCode:
+              categoryCode
+          }
+        }
+      )
+    }
+  )
+
+  return {
+    requestId,
+    candidateId,
+    jobCategoryCode:
+      categoryCode,
+    lastPromotionReport
+  }
+}
 
   async addPosition(requestValue: unknown, candidateValue: unknown, input: Record<string, unknown>, actor: AuthContext, evidence: RequestEvidence): Promise<Record<string, unknown>[]> {
     const requestId = uuid(requestValue, 'requestId'); const candidateId = uuid(candidateValue, 'candidateId')
@@ -297,17 +525,92 @@ export class SecondmentService {
       const repo = new WorkflowRepository(db); const row = await this.request(repo, requestId, true); this.assertActor(row, actor, 'S2')
       const task = await this.task(repo, row, actor, 'S2')
       if (task.taskStatus !== 'CLAIMED') throw new AppError(409, 'Organization task must be claimed first', 'WORKFLOW_TASK_UNAVAILABLE')
-      const completeness = await db.query<{ candidateCount: number, coveredCount: number, categorizedCount: number }>(
-        `SELECT COUNT(c.id)::integer AS "candidateCount",COUNT(c.formsection_id)::integer AS "categorizedCount",
-          (SELECT COUNT(DISTINCT p.requestcandidate_id)::integer FROM egas_secondmentpositionoption p
-           JOIN egas_requestcandidate pc ON pc.id=p.requestcandidate_id
-           WHERE pc.request_id=$1 AND pc.removedat IS NULL AND p.iteration_id=$2) AS "coveredCount"
-         FROM egas_requestcandidate c WHERE c.request_id=$1 AND c.removedat IS NULL`, [row.id, task.iterationId])
+      const completeness =
+  await db.query<{
+    candidateCount: number
+    coveredCount: number
+    categorizedCount: number
+    reportCount: number
+  }>(
+    `SELECT
+        COUNT(c.id)::integer
+          AS "candidateCount",
+
+        COUNT(c.formsection_id)::integer
+          AS "categorizedCount",
+  COUNT(c.lastpromotionreport)::integer
+  AS "reportCount",
+
+        (
+          SELECT
+            COUNT(
+              DISTINCT
+              p.requestcandidate_id
+            )::integer
+
+          FROM
+            egas_secondmentpositionoption p
+
+          JOIN
+            egas_requestcandidate pc
+              ON pc.id =
+                 p.requestcandidate_id
+
+          WHERE
+            pc.request_id=$1
+
+            AND pc.removedat
+              IS NULL
+
+            AND p.iteration_id=$2
+        ) AS "coveredCount"
+
+       FROM
+         egas_requestcandidate c
+
+       WHERE
+         c.request_id=$1
+
+         AND c.removedat
+           IS NULL`,
+    [
+      row.id,
+      task.iterationId
+    ]
+  )
       const totals = completeness.rows[0]!
-      if (Number(totals.candidateCount) < 1 || Number(totals.coveredCount) !== Number(totals.candidateCount)
-        || Number(totals.categorizedCount) !== Number(totals.candidateCount)) {
-        throw new AppError(409, 'A category and at least one complete proposed position are required for every candidate', 'WORKFLOW_POSITIONS_INCOMPLETE')
-      }
+      if (
+  Number(
+    totals.candidateCount
+  ) < 1 ||
+
+  Number(
+    totals.coveredCount
+  ) !==
+    Number(
+      totals.candidateCount
+    ) ||
+
+  Number(
+    totals.categorizedCount
+  ) !==
+    Number(
+      totals.candidateCount
+    ) ||
+
+  Number(
+    totals.reportCount
+  ) !==
+    Number(
+      totals.candidateCount
+    )
+) {
+  throw new AppError(
+    409,
+    'A category, last promotion report, and at least one complete proposed position are required for every candidate',
+    'WORKFLOW_POSITIONS_INCOMPLETE'
+  )
+}
       if (!await this.hasSignoff(db, row.id, task.iterationId, 'S2')) throw new AppError(409, 'Organization signoff is required', 'WORKFLOW_SIGNOFF_REQUIRED')
       const recipient = await resolveAuthorityRecipient(db, row.authorityAssignmentId!)
       await this.completeAndAdvance(db, repo, row, task, actor, 'S2', 'S3', recipient, evidence, 'SECONDMENT_S2_SUBMITTED')

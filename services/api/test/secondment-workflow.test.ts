@@ -94,7 +94,19 @@ describe('Secondment S1-S5 workflow', () => {
     const queue = await tasks.organizationQueue(organization, 0, 10)
     expect(queue).toHaveLength(1)
     await tasks.claim(queue[0]!.taskId, organization, evidence)
-    await secondment.setCandidateCategory(prepared.requestId, prepared.candidateId, 'MANAGER_DEPARTMENT', organization, evidence)
+    await secondment.prepareCandidate(
+  prepared.requestId,
+  prepared.candidateId,
+  {
+    jobCategoryCode:
+      'MANAGER_DEPARTMENT',
+
+    lastPromotionReport:
+      'ممتاز'
+  },
+  organization,
+  evidence
+)
     await secondment.addPosition(prepared.requestId, prepared.candidateId, {
       positionTitle: 'وظيفة مقترحة', organizationalDependency: 'التبعية التنظيمية', qualificationStatus: 'QUALIFIED'
     }, organization, evidence)
