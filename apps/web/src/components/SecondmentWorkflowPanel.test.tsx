@@ -44,4 +44,131 @@ describe('Secondment stage panel', () => {
       '/api/workflow/requests/request-1/secondment/candidates/candidate-1/selection', 'PUT', { positionId: 'position-1' }
     ))
   })
+  it(
+  'saves the S2 candidate category and last promotion report together',
+  async () => {
+    vi.mocked(
+      useAuth
+    ).mockReturnValue({
+      user: {
+        activeRole:
+          'ORGANIZATION'
+      }
+    } as ReturnType<
+      typeof useAuth
+    >)
+
+    const s2Detail = {
+      ...detail,
+
+      currentStage: 'S2',
+
+      candidates:
+        detail.candidates.map(
+          candidate => ({
+            ...candidate,
+
+            formSection: {
+              id: 'section-1',
+              jobCategoryCode:
+                'SECTION_HEAD',
+              nameAr:
+                'رئيس قسم'
+            },
+
+            lastPromotionReport:
+              'جيد جداً'
+          })
+        )
+    } satisfies WorkflowRequestDetail
+
+    vi.mocked(
+      apiRequest
+    ).mockImplementation(
+      async path => {
+        if (
+          path ===
+          '/api/reference/job-categories'
+        ) {
+          return [
+            {
+              code:
+                'SECTION_HEAD',
+              nameAr:
+                'رئيس قسم',
+              isActive: true
+            }
+          ] as never
+        }
+
+        return [] as never
+      }
+    )
+
+    vi.mocked(
+      apiJson
+    ).mockResolvedValue({
+      requestId:
+        'request-1',
+
+      candidateId:
+        'candidate-1',
+
+      jobCategoryCode:
+        'SECTION_HEAD',
+
+      lastPromotionReport:
+        'ممتاز'
+    })
+
+    render(
+      <MemoryRouter>
+        <SecondmentWorkflowPanel
+          detail={s2Detail}
+        />
+      </MemoryRouter>
+    )
+
+    const report =
+      await screen.findByLabelText(
+        'تقرير آخر ترقية'
+      )
+
+    fireEvent.change(
+      report,
+      {
+        target: {
+          value: 'ممتاز'
+        }
+      }
+    )
+
+    fireEvent.click(
+      screen.getByRole(
+        'button',
+        {
+          name:
+            /حفظ التجهيز/
+        }
+      )
+    )
+
+    await waitFor(
+      () =>
+        expect(
+          apiJson
+        ).toHaveBeenCalledWith(
+          '/api/workflow/requests/request-1/secondment/candidates/candidate-1/preparation',
+          'PUT',
+          {
+            jobCategoryCode:
+              'SECTION_HEAD',
+
+            lastPromotionReport:
+              'ممتاز'
+          }
+        )
+    )
+  }
+)
 })

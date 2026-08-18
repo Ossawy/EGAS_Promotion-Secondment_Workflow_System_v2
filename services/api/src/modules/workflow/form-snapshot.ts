@@ -4,7 +4,14 @@ import { AppError } from '../../shared/errors.ts'
 import type { Role } from '../../shared/roles.ts'
 import type { WorkflowStage } from './types.ts'
 
-export const PDF_TEMPLATE_VERSION = 'EGAS-OFFICIAL-AR-1.0'
+export const PDF_TEMPLATE_V1 = 'EGAS-OFFICIAL-AR-1.0'
+export const PDF_TEMPLATE_V2 = 'EGAS-OFFICIAL-AR-2.0'
+
+/*
+ * Keep V1 active until the V2 renderer is implemented and tested.
+ * Switching this constant activates V2 for newly captured snapshots.
+ */
+export const PDF_TEMPLATE_VERSION = PDF_TEMPLATE_V2
 
 export type FormSnapshot = {
   schemaVersion: 1

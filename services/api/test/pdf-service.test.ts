@@ -7,7 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AppConfig } from '../src/config/env.ts'
 import type { RequestEvidence } from '../src/middleware/request-context.ts'
 import type { AuthContext } from '../src/modules/auth/types.ts'
-import { freezeFinalSnapshot } from '../src/modules/workflow/form-snapshot.ts'
+import {
+  freezeFinalSnapshot,
+  PDF_TEMPLATE_V1,
+  PDF_TEMPLATE_V2
+} from '../src/modules/workflow/form-snapshot.ts'
 import { PdfService } from '../src/modules/workflow/pdf-service.ts'
 import { WorkflowService } from '../src/modules/workflow/workflow-service.ts'
 import { isolatedPool, testConfig } from './helpers/database.ts'
@@ -33,6 +37,35 @@ async function account(username: string): Promise<AuthContext> {
   )
   return { userId, username, sessionId: randomUUID(), activeRole: 'EMPLOYEE_AFFAIRS', roleAssignmentId: roleId,
     canManageAdmins: false, mustChangePassword: false }
+}
+
+function pdfPageSize(
+  pdf: Buffer
+): {
+  width: number
+  height: number
+} {
+  const source =
+    pdf.toString('latin1')
+
+  const match =
+    source.match(
+      /\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/
+    )
+
+  if (!match) {
+    throw new Error(
+      'PDF MediaBox was not found'
+    )
+  }
+
+  return {
+    width:
+      Number(match[1]),
+
+    height:
+      Number(match[2])
+  }
 }
 
 beforeEach(async () => {
@@ -98,4 +131,250 @@ describe('PDF evidence system', () => {
     expect(Number(frozen.snapshotJson.request.formYear)).toBe(2026)
     await expect(pdf.final(request.id, other)).rejects.toMatchObject({ code: 'PDF_FINAL_NOT_FOUND' })
   })
+  it(
+  'uses V2 for new drafts after template activation',
+  async () => {
+    const owner =
+      await account(
+        'v2-draft-owner'
+      )
+
+    const request =
+      await workflow.create(
+        {
+          requestType:
+            'PROMOTION',
+
+          cycleYear: 2026,
+          formMonth: 8,
+          formYear: 2026
+        },
+        owner,
+        evidence
+      )
+
+    const draft =
+      await pdf.draft(
+        request.id,
+        owner
+      )
+
+    expect(
+      draft.buffer
+        .subarray(0, 5)
+        .toString()
+    ).toBe('%PDF-')
+
+    const page =
+      pdfPageSize(
+        draft.buffer
+      )
+
+    /*
+     * Official V2 is A4 landscape.
+     */
+    expect(
+      page.width
+    ).toBeGreaterThan(
+      page.height
+    )
+
+    const log =
+      (
+        await pool.query<{
+          templateVersion: string
+        }>(
+          `SELECT
+             templateversion AS "templateVersion"
+           FROM egas_pdfgenerationlog
+           WHERE request_id=$1
+             AND documenttype='FORM'
+             AND documentstate='DRAFT'
+           ORDER BY generatedat DESC
+           LIMIT 1`,
+          [request.id]
+        )
+      ).rows[0]
+
+    expect(
+      log?.templateVersion
+    ).toBe(
+      PDF_TEMPLATE_V2
+    )
+  }
+)
+it(
+  'preserves V1 for a historical received snapshot after V2 activation',
+  async () => {
+    const owner =
+      await account(
+        'historical-v1-owner'
+      )
+
+    const request =
+      await workflow.create(
+        {
+          requestType:
+            'PROMOTION',
+
+          cycleYear: 2026,
+          formMonth: 8,
+          formYear: 2026
+        },
+        owner,
+        evidence
+      )
+
+    const documents =
+      await pdf.documents(
+        request.id,
+        owner
+      ) as {
+        received: Array<{
+          snapshotId: string
+        }>
+      }
+
+    expect(
+      documents.received
+    ).toHaveLength(1)
+
+    const snapshotId =
+      documents.received[0]!
+        .snapshotId
+
+    /*
+     * Simulate a snapshot captured while
+     * V1 was still the active template.
+     *
+     * It has not yet been materialized.
+     */
+    await pool.query(
+      `UPDATE egas_stagereceivedsnapshot
+          SET templateversion=$2
+        WHERE id=$1`,
+      [
+        snapshotId,
+        PDF_TEMPLATE_V1
+      ]
+    )
+
+    const received =
+      await pdf.received(
+        request.id,
+        snapshotId,
+        owner
+      )
+
+    expect(
+      received.buffer
+        .subarray(0, 5)
+        .toString()
+    ).toBe('%PDF-')
+
+    const page =
+      pdfPageSize(
+        received.buffer
+      )
+
+    /*
+     * Historical V1 renderer is portrait.
+     *
+     * This proves that activation of V2
+     * did not silently re-render historical
+     * evidence using the new layout.
+     */
+    expect(
+      page.height
+    ).toBeGreaterThan(
+      page.width
+    )
+
+    const frozen =
+      (
+        await pool.query<{
+          templateVersion: string
+        }>(
+          `SELECT
+             templateversion AS "templateVersion"
+           FROM egas_frozenpdfdocument
+           WHERE stagereceivedsnapshot_id=$1
+             AND documentstate='RECEIVED'`,
+          [snapshotId]
+        )
+      ).rows[0]
+
+    expect(
+      frozen?.templateVersion
+    ).toBe(
+      PDF_TEMPLATE_V1
+    )
+  }
+)
+it(
+  'fails closed for an unsupported stored PDF template version',
+  async () => {
+    const owner =
+      await account(
+        'unsupported-template-owner'
+      )
+
+    const request =
+      await workflow.create(
+        {
+          requestType:
+            'SECONDMENT',
+
+          cycleYear: 2026,
+          formMonth: 8,
+          formYear: 2026
+        },
+        owner,
+        evidence
+      )
+
+    const documents =
+      await pdf.documents(
+        request.id,
+        owner
+      ) as {
+        received: Array<{
+          snapshotId: string
+        }>
+      }
+
+    expect(
+      documents.received
+    ).toHaveLength(1)
+
+    const snapshotId =
+      documents.received[0]!
+        .snapshotId
+
+    /*
+     * Simulate evidence referring to a
+     * template this server does not know.
+     */
+    await pool.query(
+      `UPDATE egas_stagereceivedsnapshot
+          SET templateversion=$2
+        WHERE id=$1`,
+      [
+        snapshotId,
+        'EGAS-OFFICIAL-AR-999.0'
+      ]
+    )
+
+    await expect(
+      pdf.received(
+        request.id,
+        snapshotId,
+        owner
+      )
+    ).rejects.toMatchObject({
+      code:
+        'PDF_TEMPLATE_UNSUPPORTED'
+    })
+  }
+)
 })

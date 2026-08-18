@@ -210,6 +210,34 @@ const csrf = csrfProtection(pool, config)
     const body = exactObject(req.body, ['positionTitle','organizationalDependency','qualificationStatus'])
     res.status(201).json(await secondment.addPosition(req.params.id, req.params.candidateId, body, authContext(res), evidence(res)))
   })
+  router.put(
+  '/requests/:id/secondment/candidates/:candidateId/preparation',
+  requireActiveRole('ORGANIZATION'),
+  csrf,
+  async (
+    req,
+    res
+  ) => {
+    const body =
+      exactObject(
+        req.body,
+        [
+          'jobCategoryCode',
+          'lastPromotionReport'
+        ]
+      )
+
+    res.json(
+      await secondment.prepareCandidate(
+        req.params.id,
+        req.params.candidateId,
+        body,
+        authContext(res),
+        evidence(res)
+      )
+    )
+  }
+)
   router.put('/requests/:id/secondment/candidates/:candidateId/category', requireActiveRole('ORGANIZATION'), csrf, async (req, res) => {
     const body = exactObject(req.body, ['jobCategoryCode'])
     res.json(await secondment.setCandidateCategory(req.params.id, req.params.candidateId, body.jobCategoryCode, authContext(res), evidence(res)))
