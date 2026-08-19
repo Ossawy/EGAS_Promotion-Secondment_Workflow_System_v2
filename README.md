@@ -1,4 +1,10 @@
-# EGAS Promotion & Secondment Workflow System
+# EGAS Promotion & Secondment Workflow System v2
+ARCHIVED / HISTORICAL IMPLEMENTATION
+
+This repository contains the pre-v5 workflow implementation.
+
+Active development continues in:
+EGAS_Promotion-Secondment_Workflow_System_v2
 
 An Arabic RTL full-stack application for the EGAS Promotion and Secondment workflows:
 
