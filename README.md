@@ -357,14 +357,15 @@ Implementation is incremental. Do not implement the whole redesign in one step.
 Planned sequence:
 
 ```text
-Phase 0  repository authority / redesign checkpoint
-Phase 1  identity + authentication + operational hierarchy + clean DB baseline
-Phase 2  Admin/hierarchy completion + annual employee data adaptation
-Phase 3  workflow core + StageExecution + WorkAssignment manager/employee loop
-Phase 4  Secondment vertical slice
-Phase 5  Promotion + P4O vertical slice
-Phase 6  signatures + final document/PDF + remaining evidence
-Phase 7  frontend completion, hardening, UAT/pilot readiness
+Phase 0  repository/design checkpoint
+Phase 1  identity + authentication + hierarchy + clean DB baseline
+Phase 2  annual employee data + XLSX import/activation
+Phase 3  generic workflow engine + StageExecution/WorkAssignment
+Phase 4  Promotion + P4O
+Phase 5  Secondment
+Phase 6  signatures + PDF + immutable evidence
+Phase 7  frontend integration/completion
+Phase 8  hardening + UAT + pilot readiness
 ```
 
 Exact work-package boundaries may be adjusted, but later phases must build on the frozen v5.2 architecture rather than revive old behavior.
