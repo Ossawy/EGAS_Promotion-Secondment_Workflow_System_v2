@@ -18,6 +18,25 @@ describe('Phase 1 v5 schema contract', () => {
 
   it('does not retain the historical active migration chain', async () => {
     const files = await (await import('node:fs/promises')).readdir(new URL('../src/db/migrations/', import.meta.url))
-    expect(files).toEqual(['001_initial_v5_schema.sql'])
+    expect(files).toContain('001_initial_v5_schema.sql')
+    expect(files).toContain('002_phase2_annual_data_integrity.sql')
+
+    const historicalMigrations = [
+      '001_postgres_integrity.sql',
+      '002_phase2b_annual_snapshot_integrity.sql',
+      '003_phase3a_workflow_draft_foundation.sql',
+      '004_secondment_workflow_integrity.sql',
+      '005_promotion_workflow_integrity.sql',
+      '006_pdf_evidence_freeze.sql',
+      '007_promotion_cross_department_review.sql'
+    ]
+    for (const legacy of historicalMigrations) {
+      expect(files).not.toContain(legacy)
+    }
+
+    for (const file of files) {
+      expect(file).toMatch(/^\d{3}_[a-z0-9_]+\.sql$/)
+      expect(file).not.toMatch(/egas|postgres_integrity|phase2b|phase3a|workflow_draft/)
+    }
   })
 })

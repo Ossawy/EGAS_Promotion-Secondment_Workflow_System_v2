@@ -5,7 +5,11 @@ import ExcelJS from 'exceljs'
 import JSZip from 'jszip'
 import { AppError } from '../../shared/errors.ts'
 import {
-  normalizeHeader, requiredHeadersForYear, validateHeaders, type HeaderValidationResult
+  cleanHeaderString,
+  normalizeRoutingLabel,
+  validateHeaders,
+  type HeaderValidationResult,
+  type ImportSemanticField
 } from './header-validation.ts'
 
 export const WORKBOOK_LIMITS = Object.freeze({
@@ -27,6 +31,8 @@ export interface SourceWorkbookRow {
   sourceRowNumber: number
   raw: Record<string, RawJsonValue>
   values: ReadonlyMap<string, WorkbookCell>
+  experienceReferenceDate?: string
+  currentJobTenureReferenceDate?: string
 }
 
 export interface WorkbookInspection {
@@ -39,6 +45,9 @@ export interface WorkbookInspection {
   rowCount: number
   headers: HeaderValidationResult
   rows: SourceWorkbookRow[]
+  workbookRoutingLabels: string[]
+  experienceReferenceDate: string
+  currentJobTenureReferenceDate: string
 }
 
 type ZipEntry = { name: string, expanded: number }
@@ -258,9 +267,6 @@ function validateWorksheetDimensions(sheet: ExcelJS.Worksheet): void {
   if (sheet.actualColumnCount > WORKBOOK_LIMITS.columns) {
     throw workbookError(`A worksheet exceeds ${WORKBOOK_LIMITS.columns} columns`)
   }
-  if (sheet.actualRowCount > WORKBOOK_LIMITS.rows + WORKBOOK_LIMITS.headerSearchRows) {
-    throw workbookError(`A worksheet exceeds ${WORKBOOK_LIMITS.rows} data rows`)
-  }
 }
 
 function headerValues(sheet: ExcelJS.Worksheet, rowNumber: number): unknown[] {
@@ -271,18 +277,23 @@ function headerValues(sheet: ExcelJS.Worksheet, rowNumber: number): unknown[] {
   return values
 }
 
-function headerCandidates(workbook: ExcelJS.Workbook, requiredHeaders: readonly string[]): HeaderCandidate[] {
-  const requiredSet = new Set(requiredHeaders)
+function headerCandidates(workbook: ExcelJS.Workbook, year: number): HeaderCandidate[] {
   const candidates: HeaderCandidate[] = []
   for (const sheet of workbook.worksheets) {
     validateWorksheetDimensions(sheet)
     const lastHeaderRow = Math.min(WORKBOOK_LIMITS.headerSearchRows, sheet.actualRowCount)
     for (let rowNumber = 1; rowNumber <= lastHeaderRow; rowNumber += 1) {
       const values = headerValues(sheet, rowNumber)
-      const normalized = values.map(normalizeHeader)
-      const score = new Set(normalized.filter(value => requiredSet.has(value))).size
-      if (score >= requiredHeaders.length - 1) {
-        candidates.push({ sheet, rowNumber, values, validation: validateHeaders(values, requiredHeaders), score })
+      const validation = validateHeaders(values, year)
+      const matchedFieldCount = Object.keys(validation.fieldToColumn).length
+      if (matchedFieldCount >= 10) {
+        candidates.push({
+          sheet,
+          rowNumber,
+          values,
+          validation,
+          score: matchedFieldCount
+        })
       }
     }
   }
@@ -290,63 +301,87 @@ function headerCandidates(workbook: ExcelJS.Workbook, requiredHeaders: readonly 
 }
 
 function selectBusinessHeader(candidates: readonly HeaderCandidate[]): HeaderCandidate {
-  if (candidates.length === 0) throw workbookError('No worksheet resembles the approved annual import header schema')
+  if (candidates.length === 0) {
+    throw workbookError('No worksheet resembles the approved annual import header schema')
+  }
   const highestScore = Math.max(...candidates.map(candidate => candidate.score))
   const likely = candidates.filter(candidate => candidate.score === highestScore)
-  if (likely.length > 1) throw workbookError('More than one worksheet/header row matches the annual import schema')
+  if (likely.length > 1) {
+    throw workbookError('More than one worksheet/header row matches the annual import schema')
+  }
   const candidate = likely[0]!
   if (!candidate.validation.valid) {
-    let issue = 'duplicate or ambiguous headers were detected'
-    if (candidate.validation.missing.length > 0) issue = 'required headers are missing'
-    throw workbookError(`Annual workbook header validation failed: ${issue}`, 'WORKBOOK_HEADERS_INVALID')
+    const errorDetails = candidate.validation.errors.join('; ')
+    throw workbookError(`Annual workbook header validation failed: ${errorDetails}`, 'WORKBOOK_HEADERS_INVALID')
   }
   return candidate
 }
 
-function mapHeaderColumns(values: readonly unknown[]): Map<string, number> {
-  const columns = new Map<string, number>()
-  values.forEach((value, index) => {
-    const header = normalizeHeader(value)
-    if (header) columns.set(header, index + 1)
+function extractRoutingReferenceLabels(workbook: ExcelJS.Workbook): string[] {
+  const routingSheet = workbook.worksheets.find(sheet => {
+    const name = cleanHeaderString(sheet.name).replace(/[\s/\\-]+/g, '')
+    return name === 'نيابةمساعد' || name === 'نيابهمساعد'
   })
-  return columns
-}
+  if (!routingSheet) return []
 
-function businessCellValue(cell: ExcelJS.Cell, header: string): WorkbookCell {
-  const parsed = inspectCellValue(cell)
-  if (typeof parsed !== 'number' || header === 'تاريخ المؤهل الاصلي') return parsed
-  return cell.text || parsed
-}
-
-function rowContainsImportValue(values: ReadonlyMap<string, WorkbookCell>, requiredHeaders: readonly string[]): boolean {
-  return requiredHeaders.some(header => {
-    const value = values.get(header)
-    return value !== null && value !== undefined && String(value).trim() !== ''
-  })
+  const labels = new Set<string>()
+  const maxRow = Math.min(WORKBOOK_LIMITS.rows, routingSheet.actualRowCount)
+  for (let rowNumber = 1; rowNumber <= maxRow; rowNumber += 1) {
+    const row = routingSheet.getRow(rowNumber)
+    row.eachCell({ includeEmpty: false }, cell => {
+      const val = inspectCellValue(cell)
+      if (typeof val === 'string' && val.trim().length > 0) {
+        const cleaned = normalizeRoutingLabel(val)
+        if (cleaned && cleaned !== 'النيابة/المساعد') {
+          labels.add(cleaned)
+        }
+      }
+    })
+  }
+  return [...labels]
 }
 
 function extractSourceRows(
-  candidate: HeaderCandidate,
-  requiredHeaders: readonly string[]
+  candidate: HeaderCandidate
 ): SourceWorkbookRow[] {
-  const headerColumns = mapHeaderColumns(candidate.values)
   const rows: SourceWorkbookRow[] = []
+  const { fieldToColumn } = candidate.validation
+  const { experienceReferenceDate, currentJobTenureReferenceDate } = candidate.validation
+
   for (let rowNumber = candidate.rowNumber + 1; rowNumber <= candidate.sheet.actualRowCount; rowNumber += 1) {
     const source = candidate.sheet.getRow(rowNumber)
     const values = new Map<string, WorkbookCell>()
     const raw: Record<string, RawJsonValue> = {}
-    for (const [header, column] of headerColumns) {
-      const value = businessCellValue(source.getCell(column), header)
+    let hasAnyData = false
+
+    for (const [field, column] of Object.entries(fieldToColumn) as Array<[ImportSemanticField, number]>) {
+      const cell = source.getCell(column)
+      const value = inspectCellValue(cell)
       if (characterLength(value) > WORKBOOK_LIMITS.cellCharacters) {
         throw workbookError(`A workbook cell exceeds ${WORKBOOK_LIMITS.cellCharacters} characters`)
       }
-      values.set(header, value)
-      raw[header] = jsonValue(value)
+      values.set(field, value)
+      raw[field] = jsonValue(value)
+      if (value !== null && value !== undefined && String(value).trim() !== '') {
+        hasAnyData = true
+      }
     }
-    if (!rowContainsImportValue(values, requiredHeaders)) continue
-    rows.push({ sourceRowNumber: rowNumber, raw, values })
-    if (rows.length > WORKBOOK_LIMITS.rows) throw workbookError(`Workbook exceeds ${WORKBOOK_LIMITS.rows} data rows`)
+
+    // Skip structurally empty rows
+    if (!hasAnyData) continue
+
+    rows.push({
+      sourceRowNumber: rowNumber,
+      raw,
+      values,
+      experienceReferenceDate,
+      currentJobTenureReferenceDate
+    })
+    if (rows.length > WORKBOOK_LIMITS.rows) {
+      throw workbookError(`Workbook exceeds ${WORKBOOK_LIMITS.rows} data rows`)
+    }
   }
+
   if (rows.length === 0) throw workbookError('Annual workbook contains no data rows')
   return rows
 }
@@ -355,12 +390,22 @@ export async function inspectAnnualWorkbook(file: string, year: number): Promise
   const { resolved, basename, bytes, sourceSha256 } = await readWorkbookFile(file)
   await validateOoxml(bytes)
   const workbook = await loadWorkbook(bytes)
-  const requiredHeaders = requiredHeadersForYear(year)
-  const candidate = selectBusinessHeader(headerCandidates(workbook, requiredHeaders))
-  const rows = extractSourceRows(candidate, requiredHeaders)
+  const candidate = selectBusinessHeader(headerCandidates(workbook, year))
+  const rows = extractSourceRows(candidate)
+  const workbookRoutingLabels = extractRoutingReferenceLabels(workbook)
+
   return {
-    file: resolved, basename, sourceSha256, year, sheetName: candidate.sheet.name,
-    headerRowNumber: candidate.rowNumber, rowCount: rows.length,
-    headers: candidate.validation, rows
+    file: resolved,
+    basename,
+    sourceSha256,
+    year,
+    sheetName: candidate.sheet.name,
+    headerRowNumber: candidate.rowNumber,
+    rowCount: rows.length,
+    headers: candidate.validation,
+    rows,
+    workbookRoutingLabels,
+    experienceReferenceDate: candidate.validation.experienceReferenceDate,
+    currentJobTenureReferenceDate: candidate.validation.currentJobTenureReferenceDate
   }
 }
