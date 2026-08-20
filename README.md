@@ -1,127 +1,405 @@
 # EGAS Promotion & Secondment Workflow System v2
-V5 PHASE 1 IMPLEMENTATION
 
-This repository contains the pre-v5 workflow implementation.
+Active repository for the **v5 redesign** of the EGAS Promotion & Secondment Workflow System.
 
-Active development continues in:
-EGAS_Promotion-Secondment_Workflow_System_v2
+This repository was created from the last working pre-v5 implementation so proven technical infrastructure can be reused. The copied implementation is **not** the authority for current workflow behavior. Development from this point forward follows the v5.2 requirements and implementation blueprint.
 
-An Arabic RTL full-stack application for the EGAS Promotion and Secondment workflows:
+## Current project status
 
 ```text
-React 19 + TypeScript + Vite
-        -> same-origin HTTPS REST/JSON (cookie session + CSRF)
-Node.js 22+ + TypeScript + Express 5
-        -> pg / node-postgres with parameterized SQL
+Requirements analysis      FROZEN for implementation
+System architecture        FROZEN for implementation
+Detailed design/ERDs       FROZEN for implementation
+Implementation blueprint   READY
+Repository                  v2 active
+Application source          copied pre-v5 implementation, being redesigned in phases
+```
+
+Before Phase 1 begins, the repository may still contain pre-v5 source code and database migrations. They are retained only as technical reference until the corresponding v5 phase replaces them.
+
+## Authoritative documents
+
+Business and design authority, in order:
+
+1. `docs/requirements/EGAS_Requirements_System_Architecture_Baseline_v5.2_Implementation_Ready.pdf`
+2. `docs/architecture/EGAS_Implementation_Blueprint_v1.0.md`
+3. `AGENTS.md`
+4. Current v5 physical PostgreSQL schema/migrations and completed-phase implementation docs
+
+`docs/uis_and_html/` is a **visual-reference source only**. It must not be used to infer current permissions, hierarchy, workflow transitions, or data rules.
+
+Older v3/v4 requirements, old phase prompts, and old logical schemas are superseded and must not be used as current authority.
+
+## Target architecture
+
+```text
+React 19 + TypeScript + Vite SPA
+        |
+        | same-origin HTTPS REST/JSON
+        v
+Node.js 22+ + TypeScript + Express 5 modular monolith
+        |
+        | pg / node-postgres, parameterized SQL
+        v
 PostgreSQL
 ```
 
-The v5.2 requirements/system architecture baseline and Implementation Blueprint control business and architecture behavior. Phase 1 establishes local identity, ADMIN/OPERATIONAL account separation, and operational hierarchy. The application has no SAP CAP, CDS, CQN, UI5, Fiori, BTP, OData, GraphQL, ORM, direct SAP database, or direct Active Directory dependency.
+Employee data path:
 
-## Implemented scope
+```text
+EGAS-approved annual XLSX
+        -> controlled staging
+        -> header/data validation
+        -> routing resolution
+        -> explicit activation
+        -> immutable annual employee snapshot
+```
 
-- Cookie-based authentication with Argon2id, opaque server-side sessions, mandatory password change, trusted-Origin checks, and double-submit/stored-hash CSRF validation. Session or authentication secrets are never stored in browser storage.
-- ADMIN and OPERATIONAL account types with current unit membership and database-derived manager authority; active-role switching is removed.
-- Responsive Arabic RTL React workspace in `apps/web`, with protected routes, loading/error/empty states, role-aware shell, global search, notifications, and accessibility landmarks/keyboard focus.
-- Employee Affairs drafts using the real active annual snapshot lookup, candidate freezing, same-routing-unit enforcement, authority options/selection, notes, timeline, and request evidence.
-- Administrative dashboards and screens for users/roles, authority mappings, delegations, annual batches/validation/aliases/activation, and bounded audit browsing/PDF reports. Initial workbook import remains operator CLI-only.
-- Secondment S1 -> S2 -> S3 -> S4 -> S5 with Organization claim, unlimited proposed positions, qualification compliance, exact authority position choice, confirmation, final review, and stage history.
-- Promotion P1 -> P2 -> P3 -> P4 -> P5 with Organization preparation and per-candidate Same Position / Other Position authority decisions. Other Position requires a manually entered target job.
-- Explicit return, reject, recall, cancel, and restart actions. Restart creates a new `WorkflowIteration`; old actions, notes, tasks, and evidence remain append-only.
-- Mandatory Employee Affairs P1/S1 and Organization P2/S2 signoffs. PNG/JPEG uploads are size/dimension-limited, decoded and canonically re-encoded to PNG with metadata removed, hashed, randomly named, privately stored, and served only through authorized endpoints.
-- Working-draft, immutable received-stage, frozen-final, request audit, and Admin routing-period PDFs. Rendering uses structured server data only, no user HTML, network, or `file://` input; concurrency, queue, time, and output size are bounded.
-- Role-scoped bounded/paginated history search and recipient-owned in-app notifications with unread counts, mark-read, and request deep links.
-- Defense-in-depth for IDOR/BOLA, optimistic versions/advisory locks for race-prone actions, atomic task claim, parameterized SQL, output encoding, defensive HTTP headers, and append-only database triggers/grants.
+Private storage is used for signature assets and final official PDFs.
 
-The application treats no active annual snapshot, missing authority coverage, and empty queues as valid UI states. It does not insert synthetic records into `egas_workflow_dev`.
+The application has no required SAP CAP, CDS, CQN, UI5, Fiori, BTP, OData, GraphQL, ORM, direct SAP database, direct SAP runtime, or direct Active Directory dependency.
+
+
+## Current approved annual workbook
+
+The annual employee-data source format is the workbook layout represented by `بيانات IT.XLSX`. It contains two sheets:
+
+```text
+البيانات الاساسية   annual employee data
+نيابة مساعد         routing/reference labels contained in the workbook
+```
+
+The employee sheet currently provides these source fields:
+
+```text
+م
+رقم الموظف
+اسم الموظف
+مجموعة الموظفين
+المجموعة الفرعية
+النيابة / المساعد
+الوظيفة
+تاريخ اقدمية أخر ترقية
+تاريخ بداية الخبرة
+تقرير كفاية <YEAR>
+تاريخ الالتحاق
+experience years / months / days as of the workbook 1/1 reference
+current-job-tenure years / months / days as of the workbook 1/7 reference
+المؤسسة التعليمية-المؤهل الاصلي
+الشهادة-المؤهل الاصلي
+تاريخ المؤهل الاصلي
+بداية شغل الوظيفة
+```
+
+Important importer requirements:
+
+- parse Excel date/serial cells as dates rather than assuming display strings;
+- treat the performance report year as data/metadata (for example `تقرير كفاية 2026`) rather than adding a year-specific physical column every year;
+- tolerate approved year-token/slash/spacing variation in the duration headers through semantic header mapping, while failing closed on missing or ambiguous required fields;
+- skip empty formatted rows even when the workbook's internal worksheet dimension is much larger than the real populated data;
+- normalize/deduplicate the `نيابة مساعد` sheet for routing validation/reference only;
+- never create application users, memberships, managers, or uncontrolled routing configuration directly from workbook rows;
+- preserve workbook-provided duration triplets/reference dates as authoritative annual-snapshot/form values; consistency calculations may warn but must not silently overwrite them.
+
+The import lifecycle remains:
+
+```text
+approved XLSX
+    -> controlled staging
+    -> semantic header/data validation
+    -> routing resolution
+    -> revalidation where required
+    -> explicit transactional activation
+    -> immutable annual employee snapshot
+```
+
+## v5 operational hierarchy
+
+The pre-v5 flat-role/active-role model is removed.
+
+```text
+ADMIN
+  -> administrative-only account
+
+OPERATIONAL
+  -> exactly one active UserUnitMembership
+  -> belongs to one OperationalUnit
+```
+
+Operational units are:
+
+```text
+HR
+ORG
+AUTH (one per routing unit / نيابة)
+```
+
+Each operational unit has:
+
+```text
+OperationalUnit
+      |
+      +-- current manager
+      |     authority derived from UnitManagerAssignment
+      |
+      +-- subordinate operational employees
+```
+
+Manager authority is not a stored role and is not inferred from job-title text.
+
+ADMIN accounts do not receive workflow authority.
+
+## v5 workflow model
+
+### Promotion
+
+```text
+P1 HR     manager signs
+  -> P2 ORG   manager signs
+  -> P3 HR    review only
+  -> P4 AUTH  manager/deputy signs
+       |
+       +-- all SAME_POSITION -> P5 HR
+       |
+       +-- any OTHER_POSITION -> P4O ORG -> P5 HR
+```
+
+`OTHER_POSITION` means another position **within the same department/routing unit**. P4O confirms that placement and does not overwrite the signed P4 decision. P4O has no second ORG signature.
+
+### Secondment
+
+```text
+S1 HR     manager signs
+  -> S2 ORG   manager signs
+  -> S3 AUTH  manager/deputy signs
+  -> S4 ORG   confirmation only
+  -> S5 HR    final review
+```
+
+ORG proposes positions within the same department/routing unit; AUTH selects one valid proposal per candidate. S4 may not silently replace the signed AUTH selection.
+
+## Manager/employee work model
+
+Business stage and internal work state are separate.
+
+```text
+MANAGER_INBOX
+    -> ASSIGNED
+    -> IN_PROGRESS
+    -> MANAGER_REVIEW
+    -> COMPLETED
+
+MANAGER_REVIEW
+    -> CORRECTION_REQUIRED
+    -> IN_PROGRESS
+```
+
+The manager may perform work directly or assign it to a subordinate.
+
+Only the current manager and the current active assigned employee have edit authority for active work. Reassignment immediately ends the old employee's edit authority while preserving history.
+
+Correction concepts are intentionally distinct:
+
+- internal correction: manager -> current employee in the same stage execution;
+- return for correction: current manager -> previous business-stage manager through a new execution of that previous stage;
+- reject: current iteration ends and control returns to HR manager;
+- HR manager after reject chooses restart as a new iteration or final cancellation.
+
+## Signatures and final document
+
+Official signing stages are:
+
+```text
+Promotion:  P1 HR, P2 ORG, P4 AUTH
+Secondment: S1 HR, S2 ORG, S3 AUTH
+```
+
+Every actual signature requires fresh password reauthentication immediately before the immutable signoff is created. Passwords are never stored in signoff, audit, PDF, or logs.
+
+During workflow, authorized users can render the current official-form state as PDF preview. Completed stages freeze structured submission evidence. When the request is fully complete, the system freezes one final form snapshot and materializes the immutable official PDF.
 
 ## Repository layout
 
+Target layout:
+
 ```text
-apps/web/                         React/TypeScript frontend
-services/api/src/                 Express modules and PostgreSQL repositories
-services/api/src/db/migrations/   clean v5 migration 001_initial_v5_schema.sql
-services/api/db/operations/       controlled least-privilege deployment SQL
-services/api/test/                isolated synthetic backend tests
-docs/uis_and_html/                approved UI references
-docs/requirements/                authoritative business/schema baselines
+apps/
+└── web/                         React/TypeScript frontend
+
+services/
+└── api/
+    ├── src/
+    │   ├── app.ts
+    │   ├── server.ts
+    │   ├── config/
+    │   ├── db/
+    │   │   ├── pool.ts
+    │   │   ├── transaction.ts
+    │   │   ├── migration-runner.ts
+    │   │   ├── migrations/
+    │   │   └── repositories/
+    │   ├── middleware/
+    │   ├── modules/
+    │   │   ├── auth/
+    │   │   ├── admin/
+    │   │   ├── hierarchy/
+    │   │   ├── employee-data/
+    │   │   ├── import/
+    │   │   ├── reference/
+    │   │   ├── workflow/
+    │   │   ├── promotion/
+    │   │   ├── secondment/
+    │   │   ├── signatures/
+    │   │   ├── documents/
+    │   │   ├── notifications/
+    │   │   └── audit/
+    │   └── shared/
+    └── test/
+
+docs/
+├── requirements/
+│   └── EGAS_Requirements_System_Architecture_Baseline_v5.2_Implementation_Ready.pdf
+├── architecture/
+│   └── EGAS_Implementation_Blueprint_v1.0.md
+├── implementation/              completed-phase technical contracts
+├── handoff/                     optional implementation work-package handoffs
+└── uis_and_html/                visual references only
 ```
 
-## Configuration
+Some copied pre-v5 module names may remain temporarily until the phase that replaces them.
 
-Node.js 22+ and PostgreSQL are required. Copy `.env.example` to `services/api/.env` and replace every placeholder locally; never commit that file. Normal runtime uses `EGAS_DB_NAME=egas_workflow_dev` and restricted `EGAS_DB_USER=egas_app`. Run migrations and the grant script with the controlled schema/object owner, then switch back to `egas_app`.
+## Database baseline
 
-Production requires HTTPS, `NODE_ENV=production`, `EGAS_REQUIRE_SECURE_COOKIE=true`, a unique `EGAS_AUTH_FINGERPRINT_SECRET` of at least 32 characters, and private signature/PDF storage outside any web root. The API intentionally does not enable permissive CORS: deploy the web build and API on one origin or behind a same-origin reverse proxy.
+v5 uses a **fresh PostgreSQL schema** rather than replaying the historical pre-v5 migration chain.
 
-## Fresh or upgraded setup
+The canonical migration sequence begins with:
 
-1. Run `npm ci` and `npm run setup`.
-2. Configure `services/api/.env` temporarily with the schema/migration owner and run `npm run db:migrate` against a separate empty v5 database. The runner refuses obsolete schemas and does not recreate or drop databases.
-3. As the object owner/controlled DBA, apply `services/api/db/operations/least-privilege-role.sql.example` with the actual database, owner, and runtime role parameters. Rerun it after each controlled migration.
-4. Switch `EGAS_DB_*` to the restricted `egas_app` credentials.
-5. On a fresh database only, configure the temporary `EGAS_BOOTSTRAP_ADMIN_*` values and run `npm run admin:bootstrap`.
-6. Stage a genuine approved workbook with `npm run data:import -- --file <path> --year 2026 --operator <admin-username>`. Resolve only approved aliases, revalidate, and activate only a complete zero-blocked batch with operational approval.
-7. Configure genuine authority assignments and delegations through the Admin UI. Never fabricate coverage.
-8. Run `npm run pilot:check` and the quality commands below.
-
-See [PILOT_SETUP.md](PILOT_SETUP.md) for the operational sequence and expected real-data blockers.
-
-## Local development
-
-Use two terminals from the repository root:
-
-```powershell
-# Terminal 1 — API on http://127.0.0.1:4004
-npm run dev
-
-# Terminal 2 — web on http://127.0.0.1:5173 with same-origin API proxy
-npm run dev:web
+```text
+services/api/src/db/migrations/001_initial_v5_schema.sql
 ```
 
-Open `http://127.0.0.1:5173`. Do not expose either development server directly to untrusted networks.
+Use lowercase `snake_case` physical table names.
 
-## Commands
+The old pre-v5 migrations 001-007 and old CAP-derived physical baseline must not be run against a v5 database. Phase 1 replaces them as active migration authority.
 
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Start the Express API in watch mode. |
-| `npm run dev:web` | Start the Vite web client and local API proxy. |
-| `npm run build` | Build both backend and frontend. |
-| `npm start` | Start the already-built API. |
-| `npm test` | Run isolated backend and frontend tests; never the live development DB. |
-| `npm run typecheck` | Type-check backend and frontend without emitting. |
-| `npm run security:check` | Secret scan, dependency audit, typecheck, and all tests. |
-| `npm run db:migrate` | Apply the clean v5 migration 001 to a separate empty database. |
-| `npm run admin:bootstrap` | Create the first privileged Admin transactionally. |
-| `npm run data:import -- --file <xlsx> --year <YYYY> --operator <username>` | Securely inspect, stage, route, and validate; never activates. |
-| `npm run data:revalidate -- --batch <UUID> --operator <username>` | Revalidate an unactivated batch after approved alias changes. |
-| `npm run data:activate -- --batch <UUID> --operator <username>` | Explicitly activate a complete, zero-blocked annual snapshot. |
-| `npm run pilot:check` | Check runtime role, reference data, Admin, authority coverage, and snapshot. |
-| `npm run pdf:visual-check --workspace @egas/api` | Generate a synthetic Arabic PDF for render/visual QA. |
+Use a **separate v5 development database**. Never point the v5 clean migration at a database containing the old `egas_*` schema or old migration history. Do not automatically drop or destructively convert an old database.
 
-`pilot:check` is expected to remain non-zero until genuine primary-authority coverage exists for all active routing units and a genuine annual snapshot is activated.
+## Reuse strategy
 
-## Migration authority and checksums
+This project intentionally reuses proven technical code where semantics still fit.
 
-Applied migration files are immutable; changes require a new migration.
+Likely reuse candidates:
 
-| Version | SHA-256 |
-|---|---|
-| 001 | `760a0c27322cd44f18bd57854fedccad334aabfe985052e70f853cbb5a2aae6f` |
-| 002 | `0d423387e20104188d9755209eabd58f354cff41a30ca7a32ff8350fd1d66b40` |
-| 003 | `01e9e6c34657a0a6f15ce8cbbfc322c5dccc97b2a47ec177d1ea3b03662e7ec0` |
-| 004 | `bdbdf8846f44ab3474105a46bd2fcd9d0027d6008c4c9062c9a6fa8358e934f7` |
-| 005 | `5fa7f568dc8200e51d8d58c72648d5aaf99d352432dec04db2157d199ad276db` |
-| 006 | `8edff26bad677d75ba24bd88e2ff9824c61117c89782f32c8b92e787c1c60bf6` |
+- Express application/module structure;
+- PostgreSQL pool/transaction helpers;
+- migration runner mechanics;
+- Argon2id authentication helpers;
+- secure opaque sessions;
+- cookie, CSRF, and Origin protection;
+- centralized validation/errors;
+- annual XLSX parsing/staging patterns;
+- audit/security event patterns;
+- notification infrastructure;
+- signature image processing;
+- PDF rendering infrastructure;
+- React/Vite visual components and shell.
 
-Runtime authority is the preserved physical baseline plus `services/api/src/db/migrations`. The frozen logical SQL is a design reference, not a deployment script.
+The following pre-v5 concepts are specifically **not** to be preserved as active architecture:
 
-## Known stakeholder question
+```text
+multi-role operational accounts
+selected active role / role switching
+flat EMPLOYEE_AFFAIRS / ORGANIZATION / APPROVING_AUTHORITY authorization
+shared Organization claim queue as the primary work model
+originating HR employee permanently owning the workflow
+ApprovingAuthorityAssignment/AuthorityDelegation as manager authority
+old migration 001-007 chain as v5 database authority
+```
 
-The preserved model can represent overlapping effective delegations but the v3 requirements do not define precedence. Workflow routing therefore accepts zero or one effective delegate and fails closed with `WORKFLOW_AUTHORITY_DELEGATION_AMBIGUOUS` when more than one matches. A stakeholder rule is required before any automatic priority can be implemented.
+## Prerequisites
+
+- Node.js 22+
+- npm
+- PostgreSQL for database-backed development and integration testing
+
+Never commit `services/api/.env` or any other secret file.
+
+`.env.example` may still require Phase 1 cleanup if it contains copied pre-v5 configuration wording. Use it only after checking the current phase documentation.
+
+## Install and quality commands
+
+From the repository root:
+
+```bash
+npm ci
+npm run build
+npm run typecheck
+npm test
+npm run security:check
+npm audit
+```
+
+Available development commands inherited from the working codebase include:
+
+```bash
+npm run dev       # API watch mode
+npm run dev:web   # Vite frontend
+```
+
+Database and data commands such as `npm run db:migrate`, `admin:bootstrap`, or annual-data commands must be used only when the current v5 phase documentation says the underlying schema/API is ready.
+
+**Before Phase 1 completes, do not run the copied old migration chain against a new v5 database.**
+
+## Development process
+
+Implementation is incremental. Do not implement the whole redesign in one step.
+
+Planned sequence:
+
+```text
+Phase 0  repository authority / redesign checkpoint
+Phase 1  identity + authentication + operational hierarchy + clean DB baseline
+Phase 2  Admin/hierarchy completion + annual employee data adaptation
+Phase 3  workflow core + StageExecution + WorkAssignment manager/employee loop
+Phase 4  Secondment vertical slice
+Phase 5  Promotion + P4O vertical slice
+Phase 6  signatures + final document/PDF + remaining evidence
+Phase 7  frontend completion, hardening, UAT/pilot readiness
+```
+
+Exact work-package boundaries may be adjusted, but later phases must build on the frozen v5.2 architecture rather than revive old behavior.
 
 ## Security and data policy
 
-Never commit credentials, real HR workbooks, real signatures, generated employee PDFs, or database backups. Never log passwords, raw session/CSRF tokens, or database credentials. Workflow state, stage, actor, and snapshot fields are changed only by explicit authorized service actions—not generic client-writable CRUD.
+Never commit or expose:
 
-Detailed contracts: [Phase 2A API](docs/phase2a-api.md), [Phase 2B data/routing](docs/phase2b-data-routing.md), [workflow API](docs/phase3a-workflow-api.md), [PostgreSQL authority](docs/postgresql-implementation.md), and [CAP retirement parity](docs/cap-to-node-parity.md).
+- credentials or secrets;
+- real employee HR workbooks;
+- real signatures;
+- generated employee PDFs;
+- database backups;
+- plaintext/temporary passwords;
+- raw session or CSRF tokens.
+
+Automated tests use synthetic data.
+
+All authorization is enforced server-side and deny-by-default. Workflow state/stage/actor/snapshot fields are changed only through explicit authorized domain commands, never generic client-writable CRUD.
+
+## Historical source checkpoint
+
+Before destructive redesign work, create a Git tag for the copied working source if one has not already been created, for example:
+
+```bash
+git tag pre-v5-redesign-source
+git push origin pre-v5-redesign-source
+```
+
+That tag is the reference for recovering or comparing reusable pre-v5 implementation code.
+
+## Implementation guidance for agents
+
+Agents must read `AGENTS.md` before changing code.
+
+When a copied implementation detail conflicts with v5.2, the copied behavior is intentionally replaceable.
+
+When a requirement is genuinely unclear, stop and report the ambiguity instead of inventing a business rule.
