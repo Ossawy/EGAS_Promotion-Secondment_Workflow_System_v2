@@ -85,7 +85,15 @@ export function AppShell(): React.JSX.Element {
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [globalSearch, setGlobalSearch] = useState('')
-  const role = auth.user?.activeRole
+  const user = auth.user
+  const role = useMemo(() => {
+    if (user?.accountType === 'ADMIN') return 'ADMIN'
+    if (user?.operationalContext?.unitKind === 'HR') return 'EMPLOYEE_AFFAIRS'
+    if (user?.operationalContext?.unitKind === 'ORG') return 'ORGANIZATION'
+    if (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') return 'APPROVING_AUTHORITY'
+    return null
+  }, [user])
+
   const items = useMemo(() => role ? navigation[role] : [], [role])
 
   useEffect(() => {
@@ -113,9 +121,7 @@ export function AppShell(): React.JSX.Element {
         const updated = await apiJson<NotificationItem>(`/api/notifications/${item.id}/read`, 'POST', {})
         setNotifications(current => current.map(entry => entry.id === updated.id ? updated : entry))
         setUnreadCount(value => Math.max(0, value - 1))
-      } catch {
-        // The full page remains available if the compact drawer mutation fails.
-      }
+      } catch {}
     }
     if (item.requestId) navigate(`/requests/${item.requestId}`)
     setNotificationsOpen(false)
@@ -126,60 +132,76 @@ export function AppShell(): React.JSX.Element {
     navigate('/login', { replace: true })
   }
 
-  return <div className="app-layout">
-    <a className="skip-link" href="#main-content">تخطي إلى المحتوى الرئيسي</a>
-    {menuOpen && <button type="button" className="shell-scrim" aria-label="إغلاق القائمة" onClick={() => setMenuOpen(false)} />}
-    <aside id="main-navigation" className={`sidebar${menuOpen ? ' sidebar--open' : ''}`} aria-label="الشريط الجانبي">
-      <div className="sidebar__brand">
-        <BrandMark />
-        <button type="button" className="icon-button sidebar__close" onClick={() => setMenuOpen(false)} aria-label="إغلاق القائمة"><X /></button>
-      </div>
-      <nav className="sidebar__nav" aria-label="التنقل الرئيسي">
-        {items.map(({ to, label, icon: Icon }) => <NavLink
-          key={to}
-          to={to}
-          end={to === '/'}
-          onClick={() => setMenuOpen(false)}
-          className={({ isActive }) => `sidebar__link${isActive ? ' sidebar__link--active' : ''}`}
-        >
-          <Icon size={21} aria-hidden="true" />
-          <span>{label}</span>
-        </NavLink>)}
-      </nav>
-      <div className="sidebar__footer">
-        <Link to="/select-role" className="sidebar__user">
-          <span className="avatar"><UserRound size={20} /></span>
-          <span><strong>{auth.user?.displayName}</strong><small>{role ? roleLabels[role] : ''}</small></span>
-          <ChevronLeft size={18} aria-hidden="true" />
-        </Link>
-        <button className="sidebar__logout" type="button" onClick={() => void logout()}><LogOut size={20} /> تسجيل الخروج</button>
-      </div>
-    </aside>
-
-    <div className="workspace">
-      <header className="topbar">
-        <button type="button" className="icon-button topbar__menu" onClick={() => setMenuOpen(true)} aria-label="فتح القائمة" aria-controls="main-navigation" aria-expanded={menuOpen}><Menu /></button>
-        <form className="topbar__search" onSubmit={event => { event.preventDefault(); const value = globalSearch.trim(); navigate(value ? `/history?q=${encodeURIComponent(value)}` : '/history') }}>
-          <Search size={20} aria-hidden="true" />
-          <input type="search" aria-label="بحث شامل" value={globalSearch} onChange={event => setGlobalSearch(event.target.value)} maxLength={120} placeholder="رقم طلب أو رقم عامل..." />
-        </form>
-        <div className="topbar__actions">
-          <button type="button" className="icon-button notification-button" aria-label={`الإشعارات، ${unreadCount} غير مقروء`} aria-controls="notification-drawer" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen(value => !value)}>
-            <Bell size={22} />{unreadCount > 0 && <span aria-hidden="true">{unreadCount > 9 ? '9+' : unreadCount}</span>}
-          </button>
-          <span className="sr-only" aria-live="polite">{unreadCount} إشعار غير مقروء</span>
+  return (
+    <div className="app-layout">
+      <a className="skip-link" href="#main-content">تخطي إلى المحتوى الرئيسي</a>
+      {menuOpen && <button type="button" className="shell-scrim" aria-label="إغلاق القائمة" onClick={() => setMenuOpen(false)} />}
+      <aside id="main-navigation" className={`sidebar${menuOpen ? ' sidebar--open' : ''}`} aria-label="الشريط الجانبي">
+        <div className="sidebar__brand">
+          <BrandMark />
+          <button type="button" className="icon-button sidebar__close" onClick={() => setMenuOpen(false)} aria-label="إغلاق القائمة"><X /></button>
         </div>
-      </header>
-      {notificationsOpen && <aside id="notification-drawer" className="notification-drawer" aria-label="أحدث الإشعارات">
-        <div className="notification-drawer__header"><div><Bell size={20} /><strong>الإشعارات</strong></div><button type="button" className="icon-button" onClick={() => setNotificationsOpen(false)} aria-label="إغلاق"><X size={20} /></button></div>
-        {notifications.length === 0 ? <p className="notification-drawer__empty">لا توجد إشعارات حالياً.</p> :
-          <div className="notification-list">{notifications.map(item => <button type="button" key={item.id} className={`notification-item${item.isRead ? '' : ' notification-item--unread'}`} onClick={() => void markRead(item)}>
-            <span className="notification-item__dot" aria-hidden="true" />
-            <span><strong>{item.titleAr}</strong>{item.bodyAr && <small>{item.bodyAr}</small>}<time>{relativeTime(item.createdAt)}</time></span>
-          </button>)}</div>}
-        <Link className="notification-drawer__all" to="/notifications" onClick={() => setNotificationsOpen(false)}>عرض كل الإشعارات <ChevronLeft size={17} /></Link>
-      </aside>}
-      <main id="main-content" className="workspace__content" tabIndex={-1}><Outlet /></main>
+        <nav className="sidebar__nav" aria-label="التنقل الرئيسي">
+          {items.map(({ to, label, icon: Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={to === '/'}
+              onClick={() => setMenuOpen(false)}
+              className={({ isActive }) => `sidebar__link${isActive ? ' sidebar__link--active' : ''}`}
+            >
+              <Icon size={21} aria-hidden="true" />
+              <span>{label}</span>
+            </NavLink>
+          ))}
+        </nav>
+        <div className="sidebar__footer">
+          <Link to="/" className="sidebar__user">
+            <span className="avatar"><UserRound size={20} /></span>
+            <span><strong>{auth.user?.displayName}</strong><small>{role ? roleLabels[role] : ''}</small></span>
+            <ChevronLeft size={18} aria-hidden="true" />
+          </Link>
+          <button className="sidebar__logout" type="button" onClick={() => void logout()}><LogOut size={20} /> تسجيل الخروج</button>
+        </div>
+      </aside>
+
+      <div className="workspace">
+        <header className="topbar">
+          <button type="button" className="icon-button topbar__menu" onClick={() => setMenuOpen(true)} aria-label="فتح القائمة" aria-controls="main-navigation" aria-expanded={menuOpen}><Menu /></button>
+          <form className="topbar__search" onSubmit={event => { event.preventDefault(); const value = globalSearch.trim(); navigate(value ? `/history?q=${encodeURIComponent(value)}` : '/history') }}>
+            <Search size={20} aria-hidden="true" />
+            <input type="search" aria-label="بحث شامل" value={globalSearch} onChange={event => setGlobalSearch(event.target.value)} maxLength={120} placeholder="رقم طلب أو رقم عامل..." />
+          </form>
+          <div className="topbar__actions">
+            <button type="button" className="icon-button notification-button" aria-label={`الإشعارات، ${unreadCount} غير مقروء`} aria-controls="notification-drawer" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen(value => !value)}>
+              <Bell size={22} />{unreadCount > 0 && <span aria-hidden="true">{unreadCount > 9 ? '9+' : unreadCount}</span>}
+            </button>
+            <span className="sr-only" aria-live="polite">{unreadCount} إشعار غير مقروء</span>
+          </div>
+        </header>
+        {notificationsOpen && (
+          <aside id="notification-drawer" className="notification-drawer" aria-label="أحدث الإشعارات">
+            <div className="notification-drawer__header">
+              <div><Bell size={20} /><strong>الإشعارات</strong></div>
+              <button type="button" className="icon-button" onClick={() => setNotificationsOpen(false)} aria-label="إغلاق"><X size={20} /></button>
+            </div>
+            {notifications.length === 0 ? (
+              <p className="notification-drawer__empty">لا توجد إشعارات حالياً.</p>
+            ) : (
+              <div className="notification-list">
+                {notifications.map(item => (
+                  <button type="button" key={item.id} className={`notification-item${item.isRead ? '' : ' notification-item--unread'}`} onClick={() => void markRead(item)}>
+                    <span className="notification-item__dot" aria-hidden="true" />
+                    <span><strong>{item.titleAr}</strong>{item.bodyAr && <small>{item.bodyAr}</small>}<time>{relativeTime(item.createdAt)}</time></span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <Link className="notification-drawer__all" to="/notifications" onClick={() => setNotificationsOpen(false)}>عرض كل الإشعارات <ChevronLeft size={17} /></Link>
+          </aside>
+        )}
+        <main id="main-content" className="workspace__content" tabIndex={-1}><Outlet /></main>
+      </div>
     </div>
-  </div>
+  )
 }

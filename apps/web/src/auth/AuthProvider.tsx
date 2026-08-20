@@ -65,9 +65,10 @@ export function AuthProvider({ children }: PropsWithChildren): React.JSX.Element
     () => apiJson<UserContext>('/api/auth/change-password', 'POST', { currentPassword, newPassword })
   ), [update])
 
-  const selectRole = useCallback((role: Role) => update(
-    () => apiJson<UserContext>('/api/auth/select-active-role', 'POST', { role })
-  ), [update])
+  const selectRole = useCallback(async (_role: Role) => {
+    if (!user) throw new ApiError(401, 'AUTHENTICATION_REQUIRED', 'Authentication required')
+    return user
+  }, [user])
 
   const logout = useCallback(async () => {
     setError(null)

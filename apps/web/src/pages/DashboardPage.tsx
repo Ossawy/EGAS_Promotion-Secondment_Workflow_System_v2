@@ -120,52 +120,53 @@ function AuthorityDashboard({ data }: { data: DashboardData }): React.JSX.Elemen
   </>
 }
 
-function title(role: Role | null | undefined): [string, string] {
-  if (role === 'EMPLOYEE_AFFAIRS') return ['لوحة متابعة شئون العاملين', 'متابعة طلبات الترقية والندب والطلبات المرتجعة']
-  if (role === 'ORGANIZATION') return ['لوحة تحكم إدارة التنظيم', 'الطلبات غير المسندة والمهام المستلمة']
-  if (role === 'APPROVING_AUTHORITY') return ['لوحة تحكم سلطة الاعتماد', 'الطلبات المحالة لاتخاذ القرار']
-  return ['لوحة إدارة النظام', 'الإدارة التشغيلية والأمنية للنظام']
+function title(user: any): [string, string] {
+  if (user?.accountType === 'ADMIN') return ['لوحة إدارة النظام', 'الإدارة التشغيلية والأمنية للنظام']
+  if (user?.operationalContext?.unitKind === 'HR') return ['لوحة متابعة شئون العاملين', 'متابعة طلبات الترقية والندب والطلبات المرتجعة']
+  if (user?.operationalContext?.unitKind === 'ORG') return ['لوحة تحكم إدارة التنظيم', 'الطلبات غير المسندة والمهام المستلمة']
+  if (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') return ['لوحة تحكم سلطة الاعتماد', 'الطلبات المحالة لاتخاذ القرار']
+  return ['لوحة التحكم', 'مرحباً بك في النظام']
 }
 
 export function DashboardPage(): React.JSX.Element {
   const auth = useAuth()
-  const role = auth.user?.activeRole
+  const user = auth.user
   const [data, setData] = useState<DashboardData>(initialData)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [heading, subtitle] = title(role)
+  const [heading, subtitle] = title(user)
 
   useEffect(() => {
     let active = true
     setLoading(true); setError(null); setData(initialData)
     async function load(): Promise<void> {
-      if (role === 'EMPLOYEE_AFFAIRS') {
+      if (user?.operationalContext?.unitKind === 'HR') {
         const [requests, snapshot] = await Promise.allSettled([
           apiRequest<WorkflowRequestSummary[]>('/api/workflow/requests?top=100'),
           apiRequest<ActiveSnapshot>('/api/employee-data/active-snapshot')
         ])
         if (requests.status === 'rejected') throw requests.reason
         if (active) setData({ requests: requests.value, queue: [], snapshot: snapshot.status === 'fulfilled' ? snapshot.value : null, snapshotUnavailable: snapshot.status === 'rejected' })
-      } else if (role === 'ORGANIZATION') {
+      } else if (user?.operationalContext?.unitKind === 'ORG') {
         const queue = await apiRequest<QueueItem[]>('/api/workflow/organization/queue?top=100')
         if (active) setData({ ...initialData, queue })
-      } else if (role === 'APPROVING_AUTHORITY') {
+      } else if (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') {
         const queue = await apiRequest<QueueItem[]>('/api/workflow/authority/queue?top=100')
         if (active) setData({ ...initialData, queue })
       }
     }
     load().catch(() => { if (active) setError('تعذر تحميل بيانات لوحة المتابعة. يرجى تحديث الصفحة والمحاولة مجدداً.') }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [role])
+  }, [user])
 
-  if (role === 'ADMIN') return <AdminDashboardPage />
+  if (user?.accountType === 'ADMIN') return <AdminDashboardPage />
 
   return <div className="page-stack">
     <header className="page-heading"><div><p>إيجاس / بوابة الموارد البشرية</p><h1>{heading}</h1><span>{subtitle}</span></div></header>
     {loading ? <div className="panel loading-panel" role="status"><span className="spinner" /> جارٍ تحميل البيانات...</div> :
       error ? <div className="state-banner state-banner--danger"><AlertTriangle /><div><strong>تعذر تحميل البيانات</strong><span>{error}</span></div></div> :
-      role === 'EMPLOYEE_AFFAIRS' ? <EmployeeAffairsDashboard data={data} /> :
-      role === 'ORGANIZATION' ? <OrganizationDashboard data={data} /> :
-      role === 'APPROVING_AUTHORITY' ? <AuthorityDashboard data={data} /> : null}
+      user?.operationalContext?.unitKind === 'HR' ? <EmployeeAffairsDashboard data={data} /> :
+      user?.operationalContext?.unitKind === 'ORG' ? <OrganizationDashboard data={data} /> :
+      (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') ? <AuthorityDashboard data={data} /> : null}
   </div>
 }

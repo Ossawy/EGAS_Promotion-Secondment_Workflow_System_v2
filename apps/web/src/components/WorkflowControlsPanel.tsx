@@ -22,7 +22,7 @@ export function WorkflowControlsPanel({ detail }: { detail: WorkflowRequestDetai
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const isOriginator = user?.activeRole === 'EMPLOYEE_AFFAIRS' && user.userId === detail.createdBy.id
+  const isOriginator = user?.operationalContext?.unitKind === 'HR' && user.userId === detail.createdBy.id
   const canReturn = detail.status === 'IN_PROGRESS' && detail.actionable && ['P2','P3','P4','P4O','S2','S3','S4'].includes(detail.currentStage)
   const canReject = detail.status === 'IN_PROGRESS' && detail.actionable && ['P2','P3','P4','S2','S3','S4'].includes(detail.currentStage)
   const canRecall = isOriginator && ['DRAFT','IN_PROGRESS'].includes(detail.status)

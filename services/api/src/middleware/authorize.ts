@@ -13,26 +13,11 @@ export const requireAuthenticated: RequestHandler = (_req, res, next) => {
   try { authContext(res); next() } catch (error) { next(error) }
 }
 
-export function requireActiveRole(...roles: Role[]): RequestHandler {
-  return (_req: Request, res: Response, next: NextFunction) => {
-    try {
-      const auth = authContext(res)
-      if (auth.mustChangePassword || !auth.activeRole || !roles.includes(auth.activeRole)) {
-        throw new AppError(403, `Active ${roles.join(' or ')} role required`, 'ACTIVE_ROLE_REQUIRED')
-      }
-      next()
-    } catch (error) { next(error) }
-  }
+export const requireAdmin: RequestHandler = (_req, res, next) => {
+  try { const auth = authContext(res); if (auth.mustChangePassword || auth.accountType !== 'ADMIN') throw new AppError(403, 'Admin account required', 'ADMIN_REQUIRED'); next() } catch (error) { next(error) }
 }
 
-export const requireAdmin = requireActiveRole('ADMIN')
+export const requireOperational: RequestHandler = (_req, res, next) => { try { const auth = authContext(res); if (auth.mustChangePassword || auth.accountType !== 'OPERATIONAL') throw new AppError(403, 'Operational account required', 'OPERATIONAL_REQUIRED'); next() } catch (error) { next(error) } }
 
-export const requireManageAdmins: RequestHandler = (_req, res, next) => {
-  try {
-    const auth = authContext(res)
-    if (auth.mustChangePassword || auth.activeRole !== 'ADMIN' || !auth.canManageAdmins) {
-      throw new AppError(403, 'Manage-Admins privilege required', 'MANAGE_ADMINS_REQUIRED')
-    }
-    next()
-  } catch (error) { next(error) }
-}
+/** @deprecated obsolete v4 routes are unmounted; this fails closed if accidentally reused. */
+export function requireActiveRole(..._roles: Role[]): RequestHandler { return (_req,_res,next) => next(new AppError(404,'Obsolete role route is unavailable','OBSOLETE_ROUTE')) }

@@ -16,7 +16,6 @@ export function LoginPage(): React.JSX.Element {
 
   if (auth.user) {
     if (auth.user.mustChangePassword) return <Navigate to="/change-password" replace />
-    if (!auth.user.activeRole) return <Navigate to="/select-role" replace />
     return <Navigate to="/" replace />
   }
 
@@ -25,7 +24,7 @@ export function LoginPage(): React.JSX.Element {
     setSubmitting(true)
     try {
       const user = await auth.login(username, password)
-      navigate(user.mustChangePassword ? '/change-password' : user.activeRole ? '/' : '/select-role', { replace: true })
+      navigate(user.mustChangePassword ? '/change-password' : '/', { replace: true })
     } catch {
       // The provider exposes the safe API error next to the form.
     } finally {

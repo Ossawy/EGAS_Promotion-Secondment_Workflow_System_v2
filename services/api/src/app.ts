@@ -8,10 +8,6 @@ import { adminRouter } from './modules/admin/routes.ts'
 import { authRouter } from './modules/auth/routes.ts'
 import { LocalAuthenticationProvider } from './modules/auth/local-authentication-provider.ts'
 import { healthRouter } from './modules/health/routes.ts'
-import { referenceRouter } from './modules/reference/routes.ts'
-import { employeeDataRouter } from './modules/employee/routes.ts'
-import { notificationRouter } from './modules/notifications/routes.ts'
-import { workflowRouter } from './modules/workflow/routes.ts'
 
 export function createApp(pool: Pool, config: AppConfig): Express {
   const app = express()
@@ -61,19 +57,8 @@ export function createApp(pool: Pool, config: AppConfig): Express {
 
   app.use('/api/auth', authRouter(pool, config))
   app.use('/api/admin', adminRouter(pool, config))
-  app.use('/api/reference', referenceRouter(pool))
-  app.use('/api/employee-data', employeeDataRouter(pool))
-
-  app.use(
-    '/api/workflow',
-    workflowRouter(
-      pool,
-      config,
-      authenticationProvider
-    )
-  )
-
-  app.use('/api/notifications', notificationRouter(pool, config))
+  // Workflow, authority-delegation, import, and notification routes are deliberately
+  // not mounted in Phase 1. Their v4 role-based implementations cannot bypass v5.
 
   app.use(notFound)
   app.use(errorHandler)

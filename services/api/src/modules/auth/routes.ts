@@ -15,15 +15,16 @@ function issueCookies(res: Response, issued: IssuedSession, config: AppConfig): 
     path: '/',
     expires: new Date(issued.absoluteExpiresAt)
   }
-  res.cookie(config.auth.sessionCookieName, issued.sessionToken, { ...common, httpOnly: true })
-  res.cookie(config.auth.csrfCookieName, issued.csrfToken, { ...common, httpOnly: false })
+  const expires = common.expires.toUTCString()
+  res.append('Set-Cookie', `${config.auth.sessionCookieName}=${encodeURIComponent(issued.sessionToken)}; Path=/; Expires=${expires}; HttpOnly; SameSite=Strict${common.secure ? '; Secure' : ''}`)
+  res.append('Set-Cookie', `${config.auth.csrfCookieName}=${encodeURIComponent(issued.csrfToken)}; Path=/; Expires=${expires}; SameSite=Strict${common.secure ? '; Secure' : ''}`)
   res.setHeader('Cache-Control', 'no-store')
 }
 
 function clearCookies(res: Response, config: AppConfig): void {
   const common = { secure: config.auth.requireSecureCookie, sameSite: 'strict' as const, path: '/' }
-  res.clearCookie(config.auth.sessionCookieName, { ...common, httpOnly: true })
-  res.clearCookie(config.auth.csrfCookieName, { ...common, httpOnly: false })
+  res.append('Set-Cookie', `${config.auth.sessionCookieName}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict${common.secure ? '; Secure' : ''}`)
+  res.append('Set-Cookie', `${config.auth.csrfCookieName}=; Path=/; Max-Age=0; SameSite=Strict${common.secure ? '; Secure' : ''}`)
   res.setHeader('Cache-Control', 'no-store')
 }
 
@@ -51,14 +52,6 @@ export function authRouter(pool: Pool, config: AppConfig): Router {
     const issued = await service.changePassword(
       auth.userId, auth.sessionId, body.currentPassword, body.newPassword, evidence(res)
     )
-    issueCookies(res, issued, config)
-    res.json(issued.context)
-  })
-
-  router.post('/select-active-role', requireAuthenticated, csrf, async (req, res) => {
-    const body = exactObject(req.body, ['role'])
-    const auth = authContext(res)
-    const issued = await service.selectActiveRole(auth.userId, auth.sessionId, body.role, evidence(res))
     issueCookies(res, issued, config)
     res.json(issued.context)
   })

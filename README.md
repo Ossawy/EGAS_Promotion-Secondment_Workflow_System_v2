@@ -1,5 +1,5 @@
 # EGAS Promotion & Secondment Workflow System v2
-ARCHIVED / HISTORICAL IMPLEMENTATION
+V5 PHASE 1 IMPLEMENTATION
 
 This repository contains the pre-v5 workflow implementation.
 
@@ -16,12 +16,12 @@ Node.js 22+ + TypeScript + Express 5
 PostgreSQL
 ```
 
-The v3.0 requirements/architecture baseline controls business behavior. The approved Stitch screenshots and HTML under `docs/uis_and_html` control the visual appearance of Login, Employee Affairs, Organization, and Approving Authority screens. The Admin portal uses the same EGAS green/white visual language. The application has no SAP CAP, CDS, CQN, UI5, Fiori, BTP, OData, GraphQL, ORM, direct SAP database, or direct Active Directory dependency.
+The v5.2 requirements/system architecture baseline and Implementation Blueprint control business and architecture behavior. Phase 1 establishes local identity, ADMIN/OPERATIONAL account separation, and operational hierarchy. The application has no SAP CAP, CDS, CQN, UI5, Fiori, BTP, OData, GraphQL, ORM, direct SAP database, or direct Active Directory dependency.
 
 ## Implemented scope
 
 - Cookie-based authentication with Argon2id, opaque server-side sessions, mandatory password change, trusted-Origin checks, and double-submit/stored-hash CSRF validation. Session or authentication secrets are never stored in browser storage.
-- Exactly one selected active role per session. Backend authorization and navigation never union assigned roles.
+- ADMIN and OPERATIONAL account types with current unit membership and database-derived manager authority; active-role switching is removed.
 - Responsive Arabic RTL React workspace in `apps/web`, with protected routes, loading/error/empty states, role-aware shell, global search, notifications, and accessibility landmarks/keyboard focus.
 - Employee Affairs drafts using the real active annual snapshot lookup, candidate freezing, same-routing-unit enforcement, authority options/selection, notes, timeline, and request evidence.
 - Administrative dashboards and screens for users/roles, authority mappings, delegations, annual batches/validation/aliases/activation, and bounded audit browsing/PDF reports. Initial workbook import remains operator CLI-only.
@@ -40,8 +40,7 @@ The application treats no active annual snapshot, missing authority coverage, an
 ```text
 apps/web/                         React/TypeScript frontend
 services/api/src/                 Express modules and PostgreSQL repositories
-services/api/src/db/baseline/     preserved fresh-install physical baseline
-services/api/src/db/migrations/   immutable versioned migrations 001-006
+services/api/src/db/migrations/   clean v5 migration 001_initial_v5_schema.sql
 services/api/db/operations/       controlled least-privilege deployment SQL
 services/api/test/                isolated synthetic backend tests
 docs/uis_and_html/                approved UI references
@@ -56,8 +55,8 @@ Production requires HTTPS, `NODE_ENV=production`, `EGAS_REQUIRE_SECURE_COOKIE=tr
 
 ## Fresh or upgraded setup
 
-1. Run `npm install` and `npm run setup`.
-2. Configure `services/api/.env` temporarily with the schema/migration owner and run `npm run db:migrate`. Existing installations must not recreate the database or import the frozen logical SQL.
+1. Run `npm ci` and `npm run setup`.
+2. Configure `services/api/.env` temporarily with the schema/migration owner and run `npm run db:migrate` against a separate empty v5 database. The runner refuses obsolete schemas and does not recreate or drop databases.
 3. As the object owner/controlled DBA, apply `services/api/db/operations/least-privilege-role.sql.example` with the actual database, owner, and runtime role parameters. Rerun it after each controlled migration.
 4. Switch `EGAS_DB_*` to the restricted `egas_app` credentials.
 5. On a fresh database only, configure the temporary `EGAS_BOOTSTRAP_ADMIN_*` values and run `npm run admin:bootstrap`.
@@ -92,7 +91,7 @@ Open `http://127.0.0.1:5173`. Do not expose either development server directly t
 | `npm test` | Run isolated backend and frontend tests; never the live development DB. |
 | `npm run typecheck` | Type-check backend and frontend without emitting. |
 | `npm run security:check` | Secret scan, dependency audit, typecheck, and all tests. |
-| `npm run db:migrate` | Apply the preserved baseline when empty and missing immutable migrations. |
+| `npm run db:migrate` | Apply the clean v5 migration 001 to a separate empty database. |
 | `npm run admin:bootstrap` | Create the first privileged Admin transactionally. |
 | `npm run data:import -- --file <xlsx> --year <YYYY> --operator <username>` | Securely inspect, stage, route, and validate; never activates. |
 | `npm run data:revalidate -- --batch <UUID> --operator <username>` | Revalidate an unactivated batch after approved alias changes. |

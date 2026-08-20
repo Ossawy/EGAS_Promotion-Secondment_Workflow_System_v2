@@ -24,7 +24,7 @@ export function ChangePasswordPage(): React.JSX.Element {
     setSubmitting(true)
     try {
       const user = await auth.changePassword(currentPassword, newPassword)
-      navigate(user.activeRole ? '/' : '/select-role', { replace: true })
+      navigate('/', { replace: true })
     } catch {
       // The provider exposes the safe API error.
     } finally {

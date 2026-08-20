@@ -23,7 +23,6 @@ export function App(): React.JSX.Element {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/admin/login" element={<LoginPage />} />
         <Route path="/change-password" element={<ChangePasswordPage />} />
-        <Route path="/select-role" element={<RoleSelectionPage />} />
         <Route element={<AuthGate />}>
           <Route element={<AppShell />}>
             <Route index element={<DashboardPage />} />

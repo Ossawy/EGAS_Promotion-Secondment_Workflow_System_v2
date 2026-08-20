@@ -93,7 +93,7 @@ export function RequestDetailPage(): React.JSX.Element {
   }, [loadDetail, loadSupportingData])
 
   useEffect(() => {
-    if (!detail?.editable || !detail.routingUnit || user?.activeRole !== 'EMPLOYEE_AFFAIRS') {
+    if (!detail?.editable || !detail.routingUnit || user?.operationalContext?.unitKind !== 'HR') {
       setAuthorities([])
       return
     }
@@ -102,7 +102,7 @@ export function RequestDetailPage(): React.JSX.Element {
       .then(options => { if (active) setAuthorities(options) })
       .catch(caught => { if (active) setError(errorMessage(caught)) })
     return () => { active = false }
-  }, [detail?.editable, detail?.routingUnit, id, user?.activeRole])
+  }, [detail?.editable, detail?.routingUnit, id, user?.operationalContext?.unitKind])
 
   const candidateNames = useMemo(() => new Map(detail?.candidates.map(item => [item.id, item.employeeName]) ?? []), [detail])
 

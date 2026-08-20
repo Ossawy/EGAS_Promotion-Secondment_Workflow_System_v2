@@ -13,7 +13,11 @@ export interface UserContext {
   jobTitle: string | null
   mustChangePassword: boolean
   isActive: boolean
-  activeRole: Role | null
+  accountType?: 'ADMIN' | 'OPERATIONAL'
+  operationalContext?: null | { membershipId:string; unitId:string; unitKind:'HR'|'ORG'|'AUTH'; routingUnitId:string|null; routingUnitName:string|null; isManager:boolean; managerAssignmentId:string|null }
+  /** @deprecated retained only so deferred workflow components type-check. */
+  activeRole?: Role | null // Keep for type-checking legacy components, but not used in logic
+  /** @deprecated retained only so deferred workflow components type-check. */
   availableRoles: RoleAssignment[]
 }
 

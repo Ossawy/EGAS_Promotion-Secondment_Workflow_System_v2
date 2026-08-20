@@ -31,7 +31,13 @@ export function PromotionWorkflowPanel({ detail }: { detail: WorkflowRequestDeta
   const [routingUnits, setRoutingUnits] = useState<Array<{ id: string, nameAr: string, isActive: boolean }>>([])
   const [decisionTypes, setDecisionTypes] = useState<Record<string, 'SAME_POSITION' | 'OTHER_POSITION'>>({})
   const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState<string | null>(null)
-  const role = user?.activeRole
+  const role = useMemo(() => {
+    if (user?.accountType === 'ADMIN') return 'ADMIN'
+    if (user?.operationalContext?.unitKind === 'HR') return 'EMPLOYEE_AFFAIRS'
+    if (user?.operationalContext?.unitKind === 'ORG') return 'ORGANIZATION'
+    if (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') return 'APPROVING_AUTHORITY'
+    return null
+  }, [user])
   const actionable = detail.actionable && (
     (detail.currentStage === 'P1' && role === 'EMPLOYEE_AFFAIRS') || (detail.currentStage === 'P2' && role === 'ORGANIZATION') ||
     (detail.currentStage === 'P3' && role === 'EMPLOYEE_AFFAIRS') || (detail.currentStage === 'P4' && role === 'APPROVING_AUTHORITY') ||

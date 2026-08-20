@@ -200,7 +200,7 @@ export function SignoffPanel({
     &&
     stageRole[
       detail.currentStage
-    ] === user?.activeRole
+    ] === (user?.operationalContext?.unitKind === 'HR' ? 'EMPLOYEE_AFFAIRS' : user?.operationalContext?.unitKind === 'ORG' ? 'ORGANIZATION' : (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') ? 'APPROVING_AUTHORITY' : null)
     &&
     !currentSignoff
 

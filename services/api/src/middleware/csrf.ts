@@ -38,9 +38,7 @@ export async function validateCsrf(req: Request, res: Response, pool: Pool, conf
     throw new AppError(403, 'Invalid CSRF token', 'CSRF_REJECTED')
   }
   const result = await pool.query<{ csrfSecretHash: string | null }>(
-    `SELECT csrfsecrethash AS "csrfSecretHash"
-       FROM egas_authsession
-      WHERE id = $1 AND revokedat IS NULL`,
+    `SELECT csrf_secret_hash AS "csrfSecretHash" FROM auth_session WHERE id = $1 AND revoked_at IS NULL`,
     [auth.sessionId]
   )
   const stored = result.rows[0]?.csrfSecretHash

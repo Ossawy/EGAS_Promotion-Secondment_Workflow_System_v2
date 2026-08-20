@@ -4,220 +4,30 @@ import type { AppConfig } from '../../config/env.ts'
 import { authContext, requireAdmin } from '../../middleware/authorize.ts'
 import { csrfProtection } from '../../middleware/csrf.ts'
 import { evidence } from '../../middleware/request-context.ts'
-import { exactObject } from '../../shared/validation.ts'
-import { AppError } from '../../shared/errors.ts'
-import { AdminService, type AdminActor } from './admin-service.ts'
-import { AuthorityService } from '../authorities/authority-service.ts'
-import { ImportService, type ImportActor } from '../import/import-service.ts'
-import { RoutingAliasService } from '../import/routing-alias-service.ts'
-import { AdminReadService } from './admin-read-service.ts'
-import { PdfService } from '../workflow/pdf-service.ts'
+import { exactObject, uuid } from '../../shared/validation.ts'
+import { HierarchyService } from '../hierarchy/hierarchy-service.ts'
+import { V5AdminService } from './v5-admin-service.ts'
 
-function actor(res: Parameters<typeof authContext>[0]): AdminActor {
-  const auth = authContext(res)
-  return { userId: auth.userId, canManageAdmins: auth.canManageAdmins }
-}
-
-function importActor(res: Parameters<typeof authContext>[0]): ImportActor {
-  const auth = authContext(res)
-  return { userId: auth.userId, username: auth.username }
-}
-
-function integer(value: unknown, fallback: number, field: string): number {
-  if (value === undefined) return fallback
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new AppError(400, `${field} must be a non-negative integer`)
-  const parsed = Number(value)
-  if (!Number.isSafeInteger(parsed)) throw new AppError(400, `${field} is too large`)
-  return parsed
-}
-
-function queryBoolean(value: unknown): boolean | undefined {
-  if (value === undefined) return undefined
-  if (value === 'true') return true
-  if (value === 'false') return false
-  throw new AppError(400, 'activeOnly must be true or false')
-}
-
-function optionalYear(value: unknown): number | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || !/^\d{4}$/.test(value)) throw new AppError(400, 'year must be YYYY')
-  const year = Number(value)
-  if (year < 2000 || year > 2200) throw new AppError(400, 'year must be between 2000 and 2200')
-  return year
-}
-
-function importStatus(value: unknown): string | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || !['STAGED','VALIDATED','ACTIVATED','FAILED','SUPERSEDED'].includes(value)) {
-    throw new AppError(400, 'Unsupported import status')
-  }
-  return value
-}
-
-function rowStatus(value: unknown): string | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || !['PENDING','VALID','WARNING','BLOCKED'].includes(value)) {
-    throw new AppError(400, 'Unsupported validation status')
-  }
-  return value
-}
-
-export function adminRouter(pool: Pool, config: AppConfig): Router {
-  const router = Router()
-  const accounts = new AdminService(pool, config)
-  const authorities = new AuthorityService(pool)
-  const imports = new ImportService(pool)
-  const aliases = new RoutingAliasService(pool)
-  const reads = new AdminReadService(pool)
-  const pdf = new PdfService(pool, config)
-  const csrf = csrfProtection(pool, config)
-
+export function adminRouter(pool:Pool,config:AppConfig):Router {
+  const router=Router(), service=new V5AdminService(pool,config), hierarchy=new HierarchyService(pool), csrf=csrfProtection(pool,config)
+  const actor=(res:Parameters<typeof authContext>[0])=>({userId:authContext(res).userId})
+  const id=(value:string|string[]|undefined)=>uuid(typeof value==='string'?value:'','id')
   router.use(requireAdmin)
-
-  router.get('/overview', async (_req, res) => res.json(await reads.overview()))
-  router.get('/audit-events', async (req, res) => {
-    res.json(await reads.audit({
-      skip: integer(req.query.skip, 0, 'skip'), top: integer(req.query.top, 50, 'top'),
-      eventType: req.query.eventType, actor: req.query.actor, from: req.query.from, to: req.query.to
-    }))
-  })
-  router.get('/workflow-audit.pdf', async (req, res) => {
-    const result = await pdf.adminAudit({ requestId: req.query.requestId, routingUnitId: req.query.routingUnitId,
-      periodCode: req.query.periodCode, periodStart: req.query.periodStart, periodEnd: req.query.periodEnd }, authContext(res))
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('X-Content-Type-Options', 'nosniff')
-    res.setHeader('Cache-Control', 'private, no-store')
-    res.setHeader('Content-Disposition', `inline; filename="${result.filename.replace(/[^A-Za-z0-9._-]/g, '_')}"`)
-    res.send(result.buffer)
-  })
-
-  router.get('/users', async (req, res) => {
-    res.json(await accounts.listUsers(
-      req.query.search, integer(req.query.skip, 0, 'skip'), integer(req.query.top, 50, 'top')
-    ))
-  })
-  router.get('/users/:id', async (req, res) => res.json(await accounts.getUser(req.params.id)))
-  router.post('/users', csrf, async (req, res) => {
-    const body = exactObject(req.body, [
-      'username','staffIdentifier','displayName','jobTitle','temporaryPassword','isActive','roles'
-    ])
-    res.status(201).json(await accounts.createUser(actor(res), body, evidence(res)))
-  })
-  router.patch('/users/:id', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['expectedVersion','staffIdentifier','displayName','jobTitle'])
-    res.json(await accounts.updateUser(actor(res), { ...body, userId: req.params.id }, evidence(res)))
-  })
-  router.post('/users/:id/roles', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['role','canManageAdmins'])
-    res.json(await accounts.assignRole(actor(res), { ...body, userId: req.params.id }, evidence(res)))
-  })
-  router.delete('/users/:id/roles/:role', csrf, async (req, res) => {
-    exactObject(req.body ?? {}, [])
-    res.json(await accounts.revokeRole(
-      actor(res), { userId: req.params.id, role: req.params.role }, evidence(res)
-    ))
-  })
-  for (const [path, active] of [['disable', false], ['enable', true]] as const) {
-    router.post(`/users/:id/${path}`, csrf, async (req, res) => {
-      const body = exactObject(req.body, ['expectedVersion'])
-      res.json(await accounts.setActive(
-        actor(res), { ...body, userId: req.params.id }, active, evidence(res)
-      ))
-    })
-  }
-  router.post('/users/:id/unlock', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['expectedVersion'])
-    res.json(await accounts.unlock(actor(res), { ...body, userId: req.params.id }, evidence(res)))
-  })
-  router.post('/users/:id/reset-password', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['expectedVersion','temporaryPassword'])
-    res.json(await accounts.resetPassword(actor(res), { ...body, userId: req.params.id }, evidence(res)))
-  })
-
-  router.get('/authority-assignments', async (req, res) => {
-    res.json(await authorities.listAssignments(req.query.routingUnitId, queryBoolean(req.query.activeOnly)))
-  })
-  router.post('/authority-assignments', csrf, async (req, res) => {
-    const body = exactObject(req.body, [
-      'routingUnitId','userAccountId','authorityKind','authorityJobTitle','isPrimary','validFrom','validTo','notes'
-    ])
-    res.status(201).json(await authorities.createAssignment(actor(res), body, evidence(res)))
-  })
-  router.patch('/authority-assignments/:id', csrf, async (req, res) => {
-    const body = exactObject(req.body, [
-      'expectedVersion','authorityKind','authorityJobTitle','isPrimary','validFrom','validTo','notes'
-    ])
-    res.json(await authorities.updateAssignment(
-      actor(res), { ...body, assignmentId: req.params.id }, evidence(res)
-    ))
-  })
-  router.post('/authority-assignments/:id/deactivate', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['expectedVersion'])
-    res.json(await authorities.deactivateAssignment(
-      actor(res), { ...body, assignmentId: req.params.id }, evidence(res)
-    ))
-  })
-
-  router.get('/delegations', async (req, res) => {
-    res.json(await authorities.listDelegations(req.query.assignmentId, queryBoolean(req.query.activeOnly)))
-  })
-  router.post('/delegations', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['assignmentId','delegatedUserId','validFrom','validTo','reason'])
-    res.status(201).json(await authorities.createDelegation(actor(res), body, evidence(res)))
-  })
-  router.patch('/delegations/:id', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['expectedVersion','validFrom','validTo','reason'])
-    res.json(await authorities.updateDelegation(
-      actor(res), { ...body, delegationId: req.params.id }, evidence(res)
-    ))
-  })
-  router.post('/delegations/:id/deactivate', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['expectedVersion'])
-    res.json(await authorities.deactivateDelegation(
-      actor(res), { ...body, delegationId: req.params.id }, evidence(res)
-    ))
-  })
-
-  router.get('/routing-aliases', async (req, res) => {
-    res.json(await aliases.list(queryBoolean(req.query.activeOnly)))
-  })
-  router.post('/routing-aliases', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['sourceLabel','routingUnitId','notes'])
-    res.status(201).json(await aliases.create(importActor(res), body, evidence(res)))
-  })
-  router.patch('/routing-aliases/:id', csrf, async (req, res) => {
-    const body = exactObject(req.body, ['sourceLabel','routingUnitId','isActive','notes'])
-    res.json(await aliases.update(importActor(res), req.params.id, body, evidence(res)))
-  })
-  router.post('/routing-aliases/:id/deactivate', csrf, async (req, res) => {
-    exactObject(req.body ?? {}, [])
-    res.json(await aliases.deactivate(importActor(res), req.params.id, evidence(res)))
-  })
-
-  router.get('/import-batches', async (req, res) => {
-    res.json(await imports.listBatches(
-      integer(req.query.skip, 0, 'skip'), Math.min(100, integer(req.query.top, 50, 'top')),
-      optionalYear(req.query.year), importStatus(req.query.status)
-    ))
-  })
-  router.get('/import-batches/:id', async (req, res) => res.json(await imports.getBatch(req.params.id)))
-  router.get('/import-batches/:id/rows', async (req, res) => {
-    res.json(await imports.listRows(
-      req.params.id, integer(req.query.skip, 0, 'skip'), Math.min(100, integer(req.query.top, 50, 'top')),
-      rowStatus(req.query.status)
-    ))
-  })
-  router.get('/import-batches/:id/unmapped-routing-labels', async (req, res) => {
-    res.json(await imports.unmappedRoutingLabels(req.params.id))
-  })
-  router.post('/import-batches/:id/revalidate', csrf, async (req, res) => {
-    exactObject(req.body ?? {}, [])
-    res.json(await imports.revalidate(req.params.id, importActor(res), evidence(res)))
-  })
-  router.post('/import-batches/:id/activate', csrf, async (req, res) => {
-    exactObject(req.body ?? {}, [])
-    res.json(await imports.activate(req.params.id, importActor(res), evidence(res)))
-  })
-
+  router.get('/accounts',async(_req,res)=>res.json(await service.listAccounts()))
+  router.get('/accounts/:id',async(req,res)=>res.json(await service.account(id(req.params.id))))
+  router.post('/accounts',csrf,async(req,res)=>res.status(201).json(await service.createAccount(actor(res),exactObject(req.body,['username','staffIdentifier','displayName','jobTitle','accountType','temporaryPassword','isActive','unitId']),evidence(res))))
+  router.patch('/accounts/:id',csrf,async(req,res)=>res.json(await service.updateAccount(actor(res),id(req.params.id),exactObject(req.body,['staffIdentifier','displayName','jobTitle']),evidence(res))))
+  router.post('/accounts/:id/enable',csrf,async(req,res)=>{exactObject(req.body??{},[]);res.json(await service.setAccountActive(actor(res),id(req.params.id),true,evidence(res)))} )
+  router.post('/accounts/:id/disable',csrf,async(req,res)=>{exactObject(req.body??{},[]);res.json(await service.setAccountActive(actor(res),id(req.params.id),false,evidence(res)))} )
+  router.post('/accounts/:id/unlock',csrf,async(req,res)=>{exactObject(req.body??{},[]);res.json(await service.unlock(actor(res),id(req.params.id),evidence(res)))} )
+  router.post('/accounts/:id/reset-temporary-password',csrf,async(req,res)=>res.json(await service.resetPassword(actor(res),id(req.params.id),exactObject(req.body,['temporaryPassword']).temporaryPassword,evidence(res))))
+  router.get('/operational-units',async(_req,res)=>res.json(await service.units()))
+  router.post('/operational-units',csrf,async(req,res)=>res.status(201).json(await service.createUnit(actor(res),exactObject(req.body,['kind','name','routingUnitId']),evidence(res))))
+  router.get('/operational-units/:unitId',async(req,res)=>{const unit=await hierarchy.getOperationalUnit(uuid(req.params.unitId,'unitId'));if(!unit)res.sendStatus(404);else res.json(unit)})
+  router.get('/operational-units/:unitId/members',async(req,res)=>res.json(await service.members(uuid(req.params.unitId,'unitId'))))
+  router.post('/operational-units/:unitId/memberships',csrf,async(req,res)=>res.status(201).json(await service.transfer(actor(res),uuid(req.params.unitId,'unitId'),exactObject(req.body,['userId']),evidence(res))))
+  router.post('/operational-units/:unitId/manager-assignments',csrf,async(req,res)=>res.status(201).json(await service.replaceManager(actor(res),uuid(req.params.unitId,'unitId'),exactObject(req.body,['managerUserId','replacementReason']),evidence(res))))
+  router.get('/operational-units/:unitId/manager-history',async(req,res)=>res.json(await hierarchy.getManagerHistory(uuid(req.params.unitId,'unitId'))))
+  router.get('/operational-units/:unitId/subordinates',async(req,res)=>res.json(await hierarchy.listSubordinates(uuid(req.params.unitId,'unitId'))))
   return router
 }

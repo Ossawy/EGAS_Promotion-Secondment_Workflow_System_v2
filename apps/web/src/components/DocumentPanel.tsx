@@ -32,7 +32,7 @@ export function DocumentPanel({ detail }: { detail: WorkflowRequestDetail }): Re
     <div className="document-actions">
       <article><FileDown /><div><strong>مسودة العمل الحالية</strong><span>تُولد عند الطلب وقد تتغير مع الحفظ.</span></div><PdfLink href={`/api/workflow/requests/${detail.id}/pdf/draft`}>عرض كـ PDF</PdfLink></article>
       {documents?.finalAvailable && <article className="document-final"><Printer /><div><strong>النسخة النهائية المجمدة</strong><span>بيانات الاعتماد النهائي غير قابلة لإعادة الكتابة.</span></div><span className="document-buttons"><PdfLink href={`/api/workflow/requests/${detail.id}/pdf/final`}>عرض / طباعة</PdfLink><PdfLink download href={`/api/workflow/requests/${detail.id}/pdf/final`}>تنزيل</PdfLink></span></article>}
-      {user?.activeRole === 'EMPLOYEE_AFFAIRS' && <article><FileClock /><div><strong>سجل التدقيق الكامل</strong><span>مستند منفصل عن النموذج الرسمي.</span></div><PdfLink href={`/api/workflow/requests/${detail.id}/pdf/audit`}>عرض سجل التدقيق</PdfLink></article>}
+      {user?.operationalContext?.unitKind === 'HR' && <article><FileClock /><div><strong>سجل التدقيق الكامل</strong><span>مستند منفصل عن النموذج الرسمي.</span></div><PdfLink href={`/api/workflow/requests/${detail.id}/pdf/audit`}>عرض سجل التدقيق</PdfLink></article>}
     </div>
     {documents && documents.received.length > 0 && <div className="received-documents"><h3>نسخ المهام كما استلمتها</h3>{documents.received.map(item => <article key={item.snapshotId}>
       <span className="stage-chip">{item.stageCode}</span><div><strong>الدورة {item.iterationNo}</strong><small>{date(item.receivedAt)}</small></div>

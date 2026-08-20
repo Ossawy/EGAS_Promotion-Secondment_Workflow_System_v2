@@ -2,7 +2,6 @@ import { createHash, randomBytes } from 'node:crypto'
 import argon2 from 'argon2'
 import type { Pool } from 'pg'
 import type { AppConfig } from '../../config/env.ts'
-import { isRole, type Role } from '../../shared/roles.ts'
 import type { AuthenticationProvider } from './authentication-provider.ts'
 import type { AuthContext } from './types.ts'
 
@@ -10,9 +9,7 @@ type SessionPrincipalRow = {
   sessionId: string
   userId: string
   username: string
-  activeRole: string | null
-  roleAssignmentId: string | null
-  canManageAdmins: boolean | null
+  accountType: 'ADMIN' | 'OPERATIONAL'
   mustChangePassword: boolean
   absoluteExpiresAt: Date | string
   lastSeenAt: Date | string
@@ -49,43 +46,27 @@ export class LocalAuthenticationProvider implements AuthenticationProvider {
   async resolveSessionToken(token: string): Promise<AuthContext | null> {
     if (token.length < 32 || token.length > 256) return null
     const result = await this.pool.query<SessionPrincipalRow>(
-      `SELECT s.id AS "sessionId", a.id AS "userId", a.username,
-              s.activerole AS "activeRole", r.id AS "roleAssignmentId",
-              r.canmanageadmins AS "canManageAdmins", a.mustchangepassword AS "mustChangePassword",
-              s.absoluteexpiresat AS "absoluteExpiresAt", s.lastseenat AS "lastSeenAt"
-         FROM egas_authsession s
-         JOIN egas_useraccount a ON a.id = s.user_id AND a.isactive = TRUE
-         LEFT JOIN egas_useraccountrole r
-           ON r.user_id = a.id AND r.role = s.activerole AND r.isactive = TRUE
-        WHERE s.tokenhash = $1
-          AND s.revokedat IS NULL
-          AND s.idleexpiresat > CURRENT_TIMESTAMP
-          AND s.absoluteexpiresat > CURRENT_TIMESTAMP
-          AND (s.activerole IS NULL OR r.id IS NOT NULL)`,
+      `SELECT s.id AS "sessionId", a.id AS "userId", a.username, a.account_type AS "accountType", a.must_change_password AS "mustChangePassword", s.absolute_expires_at AS "absoluteExpiresAt", s.last_seen_at AS "lastSeenAt"
+         FROM auth_session s JOIN user_account a ON a.id = s.user_id AND a.is_active = TRUE
+        WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.idle_expires_at > CURRENT_TIMESTAMP AND s.absolute_expires_at > CURRENT_TIMESTAMP`,
       [this.hashSessionToken(token)]
     )
     const row = result.rows[0]
-    if (!row || (row.activeRole !== null && !isRole(row.activeRole))) return null
+    if (!row) return null
 
     const lastSeen = new Date(row.lastSeenAt).getTime()
     if (Number.isFinite(lastSeen) && Date.now() - lastSeen >= 60_000) {
       await this.pool.query(
-        `UPDATE egas_authsession
-            SET lastseenat = CURRENT_TIMESTAMP,
-                idleexpiresat = LEAST(CURRENT_TIMESTAMP + $2::interval, absoluteexpiresat)
-          WHERE id = $1 AND revokedat IS NULL`,
+        `UPDATE auth_session SET last_seen_at=CURRENT_TIMESTAMP, idle_expires_at=LEAST(CURRENT_TIMESTAMP + $2::interval, absolute_expires_at) WHERE id=$1 AND revoked_at IS NULL`,
         [row.sessionId, `${this.config.auth.idleMinutes} minutes`]
       )
     }
 
-    const activeRole = row.activeRole as Role | null
     return {
       userId: row.userId,
       username: row.username,
       sessionId: row.sessionId,
-      activeRole,
-      roleAssignmentId: row.roleAssignmentId,
-      canManageAdmins: activeRole === 'ADMIN' && Boolean(row.canManageAdmins),
+      accountType: row.accountType,
       mustChangePassword: row.mustChangePassword
     }
   }

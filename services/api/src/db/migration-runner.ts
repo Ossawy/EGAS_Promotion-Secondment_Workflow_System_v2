@@ -46,9 +46,7 @@ export async function applyMigration(
   client: Pick<PoolClient, 'query'>,
   migration: Migration
 ): Promise<'applied' | 'already-applied'> {
-  const result = await client.query<AppliedMigration>(
-    'SELECT version, sha256 FROM egas_schemamigration WHERE version=$1', [migration.version]
-  )
+  const result = await client.query<AppliedMigration>('SELECT version, sha256 FROM schema_migration WHERE version=$1', [migration.version])
   const applied = result.rows[0]
   if (applied) {
     if (applied.sha256 !== migration.sha256) {
@@ -58,52 +56,28 @@ export async function applyMigration(
   }
   await executeFullPostgresScript(client, migration.sql)
   await client.query(
-    'INSERT INTO egas_schemamigration (version,sha256,appliedat) VALUES ($1,$2,CURRENT_TIMESTAMP)',
+    'INSERT INTO schema_migration (version,sha256,applied_at) VALUES ($1,$2,CURRENT_TIMESTAMP)',
     [migration.version, migration.sha256]
   )
   return 'applied'
 }
-
-const REQUIRED_TABLES = [
-  'egas_schemamigration','egas_routingunit','egas_jobcategoryreference',
-  'egas_qualificationstatusreference','egas_useraccount','egas_useraccountrole',
-  'egas_authsession','egas_authloginattempt','egas_importbatch','egas_employeeimportstagingrow',
-  'egas_employee','egas_employeeannualsnapshot','egas_routingunitsourcealias',
-  'egas_approvingauthorityassignment','egas_authoritydelegation','egas_usersignatureasset',
-  'egas_workflowrequest','egas_requestformsection','egas_requestcandidate',
-  'egas_secondmentpositionoption','egas_workflowiteration','egas_stagetask',
-  'egas_stagereceivedsnapshot','egas_promotiondecision','egas_stageaction',
-  'egas_workflownote','egas_workflowsignoff','egas_securityevent','egas_notification',
-  'egas_auditevent','egas_pdfgenerationlog'
-]
 
 export async function migrateDatabase(pool: Pool): Promise<Array<{ version: string, result: string }>> {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
     await client.query("SELECT pg_advisory_xact_lock(hashtext('egas_schema_migrations'))")
-    const legacy = await client.query<{ legacy: string | null, current: string | null }>(
-      `SELECT to_regclass('egas.routing_unit')::text AS legacy,
-              to_regclass('public.egas_routingunit')::text AS current`
+    const legacy = await client.query<{ legacy: boolean, current: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='egas_useraccount') AS legacy,
+             EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='schema_migration') AS current`
     )
     const state = legacy.rows[0]
-    if (state?.legacy && !state.current) {
-      throw new Error('The frozen handwritten egas.routing_unit schema exists without the application schema; migration is blocked')
-    }
-    if (state?.legacy && state.current) {
-      throw new Error('Both handwritten egas.* and application egas_* schemas exist; migration is blocked')
-    }
-    if (!state?.current) {
-      const baseline = await readFile(new URL('./baseline/000_existing_cap_schema.sql', import.meta.url), 'utf8')
-      await executeFullPostgresScript(client, baseline)
-    } else {
-      const tables = await client.query<{ name: string, present: string | null }>(
-        `SELECT name, to_regclass('public.' || name)::text AS present FROM unnest($1::text[]) AS name`,
-        [REQUIRED_TABLES]
-      )
-      const missing = tables.rows.filter(row => !row.present).map(row => row.name)
-      if (missing.length) throw new Error(`Existing EGAS schema is incomplete; missing: ${missing.join(', ')}`)
-    }
+    if (state?.legacy) throw new Error('An obsolete v5 table exists; migration requires a separate empty database')
+    await client.query(`CREATE TABLE IF NOT EXISTS schema_migration (
+      version text PRIMARY KEY,
+      sha256 char(64) NOT NULL,
+      applied_at timestamptz NOT NULL
+    )`)
     const results = []
     for (const migration of await loadMigrations()) {
       results.push({ version: migration.version, result: await applyMigration(client, migration) })

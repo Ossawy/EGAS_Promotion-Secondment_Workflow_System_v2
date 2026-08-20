@@ -57,7 +57,13 @@ export function SecondmentWorkflowPanel({ detail }: { detail: WorkflowRequestDet
 )
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const role = user?.activeRole
+  const role = useMemo(() => {
+    if (user?.accountType === 'ADMIN') return 'ADMIN'
+    if (user?.operationalContext?.unitKind === 'HR') return 'EMPLOYEE_AFFAIRS'
+    if (user?.operationalContext?.unitKind === 'ORG') return 'ORGANIZATION'
+    if (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') return 'APPROVING_AUTHORITY'
+    return null
+  }, [user])
   const actionable = detail.actionable && (
     (detail.currentStage === 'S1' && role === 'EMPLOYEE_AFFAIRS') ||
     (detail.currentStage === 'S2' && role === 'ORGANIZATION') ||
