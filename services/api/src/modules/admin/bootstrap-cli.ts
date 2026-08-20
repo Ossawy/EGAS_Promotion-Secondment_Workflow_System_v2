@@ -40,8 +40,8 @@ export function readBootstrapInput(): BootstrapInput {
     throw new Error('Bootstrap username must be 3-120 letters, digits, or . _ @ -')
   }
   if (input.displayName.length > 300) throw new Error('Bootstrap display name exceeds 300 characters')
-  if (input.temporaryPassword.length < 14 || input.temporaryPassword.length > 256) {
-    throw new Error('Temporary password must be between 14 and 256 characters')
+  if (input.temporaryPassword.length < 8 || input.temporaryPassword.length > 256) {
+    throw new Error('Temporary password must be between 8 and 256 characters')
   }
   return input
 }

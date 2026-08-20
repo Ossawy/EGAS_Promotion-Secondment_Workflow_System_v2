@@ -38,10 +38,10 @@ export function ChangePasswordPage(): React.JSX.Element {
         <span className="input-shell"><input type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} required /></span>
       </label>
       <label>كلمة المرور الجديدة
-        <span className="input-shell"><input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} required /></span>
+        <span className="input-shell"><input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} minLength={8} maxLength={256} required /></span>
       </label>
       <label>تأكيد كلمة المرور الجديدة
-        <span className="input-shell"><input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} required /></span>
+        <span className="input-shell"><input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} minLength={8} maxLength={256} required /></span>
       </label>
       {(localError || auth.error) && <p className="error" role="alert">{localError ?? auth.error}</p>}
       <button className="button button--primary auth-form__submit" type="submit" disabled={submitting}>{submitting ? 'جارٍ الحفظ...' : 'حفظ كلمة المرور'}</button>

@@ -54,8 +54,8 @@ export function timestamp(value: unknown, field: string, fallback: string | null
 }
 
 export function password(value: unknown, field = 'newPassword'): string {
-  if (typeof value !== 'string' || value.length < 14 || value.length > 256) {
-    throw new AppError(400, `${field} must be between 14 and 256 characters`)
+  if (typeof value !== 'string' || value.length < 8 || value.length > 256) {
+    throw new AppError(400, `${field} must be between 8 and 256 characters`)
   }
   return value
 }

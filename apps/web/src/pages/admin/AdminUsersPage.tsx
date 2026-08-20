@@ -92,7 +92,7 @@ export function AdminUsersPage(): React.JSX.Element {
         <label>رقم الموظف<input name="staffIdentifier" maxLength={120} /></label>
         <label>الاسم المعروض<input name="displayName" required maxLength={300} /></label>
         <label>المسمى الوظيفي<input name="jobTitle" maxLength={300} /></label>
-        <label>كلمة المرور المؤقتة<input name="temporaryPassword" type="password" required autoComplete="new-password" /></label>
+        <label>كلمة المرور المؤقتة<input name="temporaryPassword" type="password" minLength={8} maxLength={256} required autoComplete="new-password" /></label>
         <fieldset className="admin-role-picker"><legend>الأدوار</legend>{roles.map(role => <label key={role.value}><input type="checkbox" name="roles" value={role.value} disabled={role.value === 'ADMIN' && !canManageAdmins} /> {role.label}</label>)}{canManageAdmins && <label><input type="checkbox" name="canManageAdmins" /> السماح بإدارة المسؤولين</label>}</fieldset>
         <div className="form-actions form-actions--wide"><button className="button button--secondary" type="button" onClick={() => setCreateOpen(false)}>إلغاء</button><button className="button button--primary" disabled={busy}>إنشاء الحساب</button></div>
       </form>
@@ -122,7 +122,7 @@ export function AdminUsersPage(): React.JSX.Element {
       <div className="admin-editor__section"><h3>إجراءات الحساب</h3><div className="admin-account-actions">
         <button className="button button--secondary" disabled={busy || selected.id === actor?.userId} onClick={() => void mutate(`/api/admin/users/${selected.id}/${selected.isActive ? 'disable' : 'enable'}`, 'POST', { expectedVersion: selected.version })}>{selected.isActive ? <UserRoundX size={18} /> : <UserRoundCheck size={18} />}{selected.isActive ? 'تعطيل الحساب' : 'تفعيل الحساب'}</button>
         <button className="button button--secondary" disabled={busy || !selected.isLocked} onClick={() => void mutate(`/api/admin/users/${selected.id}/unlock`, 'POST', { expectedVersion: selected.version })}><LockOpen size={18} /> فتح القفل</button>
-        <div className="password-reset"><input aria-label="كلمة مرور مؤقتة جديدة" type="password" value={temporaryPassword} onChange={event => setTemporaryPassword(event.target.value)} placeholder="كلمة مرور مؤقتة جديدة" autoComplete="new-password" /><button className="button button--secondary" disabled={busy || !temporaryPassword} onClick={() => void mutate(`/api/admin/users/${selected.id}/reset-password`, 'POST', { expectedVersion: selected.version, temporaryPassword })}><KeyRound size={18} /> إعادة التعيين</button></div>
+        <div className="password-reset"><input aria-label="كلمة مرور مؤقتة جديدة" type="password" minLength={8} maxLength={256} value={temporaryPassword} onChange={event => setTemporaryPassword(event.target.value)} placeholder="كلمة مرور مؤقتة جديدة" autoComplete="new-password" /><button className="button button--secondary" disabled={busy || !temporaryPassword} onClick={() => void mutate(`/api/admin/users/${selected.id}/reset-password`, 'POST', { expectedVersion: selected.version, temporaryPassword })}><KeyRound size={18} /> إعادة التعيين</button></div>
       </div></div>
     </section>}
   </div>
