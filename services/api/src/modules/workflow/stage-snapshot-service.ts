@@ -37,6 +37,18 @@ export interface StageSnapshotData {
     recommendation: string | null
     notes: string | null
   }>
+  secondmentSelections?: Array<{
+    candidateId: string
+    personnelNumber: string
+    employeeName: string
+    sourceS3StageExecutionId: string
+    selectedOptionId: string
+    sourceS2StageExecutionId: string
+    positionTitle: string
+    organizationalDependency: string
+    qualificationStatusCode: string
+    qualificationStatusName: string | null
+  }>
   submittedAt: string
   submittedByUserId: string
 }
