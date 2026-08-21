@@ -3,8 +3,16 @@ import type { Pool } from 'pg'
 import type { Queryable } from '../../db/types.ts'
 import { withTransaction } from '../../db/transaction.ts'
 import { AppError } from '../../shared/errors.ts'
-import { uuid } from '../../shared/validation.ts'
+import { optionalText, uuid } from '../../shared/validation.ts'
 import { recordAuditEvent } from '../audit/security-events.ts'
+import { signaturePassword } from '../auth/current-password-verifier.ts'
+import { DatabaseCurrentPasswordVerifier } from '../auth/current-password-verifier.ts'
+import { LocalAuthenticationProvider } from '../auth/local-authentication-provider.ts'
+import { buildFinalFormSnapshot } from './form-snapshot.ts'
+import { PdfService } from './pdf-service.ts'
+import { PromotionWorkflowService } from './promotion-workflow-service.ts'
+import { SecondmentWorkflowService } from './secondment-workflow-service.ts'
+import type { AppConfig } from '../../config/env.ts'
 import {
   canReadRequest,
   isCurrentHrManager,
@@ -17,6 +25,7 @@ import {
 } from './workflow-auth.ts'
 import { resolveResponsibleOperationalUnit } from './workflow-unit-resolver.ts'
 import { createStageSubmissionSnapshot } from './stage-snapshot-service.ts'
+import type { StageSnapshotData } from './stage-snapshot-service.ts'
 import {
   SIGNING_STAGE_CODES,
   type AddCandidateInput,
@@ -28,6 +37,7 @@ import {
   type RejectStageInput,
   type RequestCandidateSummary,
   type ReturnPreviousInput,
+  type SignAndAdvanceInput,
   type StageCode,
   type StageExecutionSummary,
   type TimelineEvent,
@@ -115,7 +125,18 @@ export async function insertStageAction(
 }
 
 export class WorkflowEngineService {
-  constructor(private readonly pool: Pool) {}
+  private readonly promotionService: PromotionWorkflowService
+  private readonly secondmentService: SecondmentWorkflowService
+  private readonly pdfService?: PdfService
+
+  constructor(
+    private readonly pool: Pool,
+    private readonly config?: AppConfig
+  ) {
+    this.promotionService = new PromotionWorkflowService(pool)
+    this.secondmentService = new SecondmentWorkflowService(pool)
+    if (config) this.pdfService = new PdfService(pool, config)
+  }
 
   async createRequest(
     input: CreateRequestInput,
@@ -901,7 +922,7 @@ export class WorkflowEngineService {
   ): Promise<StageExecutionSummary> {
     const stageExecutionId = uuid(stageExecutionIdValue, 'stageExecutionId')
 
-    return await withTransaction(this.pool, async db => {
+    const txResult = await withTransaction(this.pool, async db => {
       await requireOperationalUser(db, actor.userId)
       const { request, iteration, stageExecution } = await lockCurrentStageExecution(db, stageExecutionId)
 
@@ -911,6 +932,112 @@ export class WorkflowEngineService {
       }
 
       await requireCurrentUnitManager(db, actor.userId, stageExecution.responsibleUnitId)
+
+      // Check for P5 or S5 final completion
+      if (stageExecution.stageCode === 'P5' || stageExecution.stageCode === 'S5') {
+        const isPromotion = stageExecution.stageCode === 'P5'
+        if (isPromotion && request.requestType !== 'PROMOTION') {
+          throw new AppError(400, 'Stage P5 is only valid for PROMOTION requests', 'INVALID_REQUEST_TYPE')
+        }
+        if (!isPromotion && request.requestType !== 'SECONDMENT') {
+          throw new AppError(400, 'Stage S5 is only valid for SECONDMENT requests', 'INVALID_REQUEST_TYPE')
+        }
+
+        // Build canonical final form snapshot from authoritative current-iteration signoffs
+        const { payload: finalPayload, sha256: finalSha256, templateVersion } = await buildFinalFormSnapshot(
+          db,
+          request.id,
+          iteration.id,
+          request.requestType as 'PROMOTION' | 'SECONDMENT'
+        )
+
+        const finalSnapshotId = randomUUID()
+        await db.query(
+          `INSERT INTO final_form_snapshot
+            (id, request_id, iteration_id, template_version, payload, sha256, created_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, CURRENT_TIMESTAMP)`,
+          [
+            finalSnapshotId,
+            request.id,
+            iteration.id,
+            templateVersion,
+            JSON.stringify(finalPayload),
+            finalSha256
+          ]
+        )
+
+        // Close stage execution
+        await db.query(
+          `UPDATE stage_execution
+              SET status = 'COMPLETED',
+                  work_state = 'COMPLETED',
+                  completed_at = CURRENT_TIMESTAMP
+            WHERE id = $1`,
+          [stageExecutionId]
+        )
+
+        // End active work assignment
+        await db.query(
+          `UPDATE work_assignment
+              SET ended_at = CURRENT_TIMESTAMP,
+                  end_reason = 'STAGE_COMPLETED'
+            WHERE stage_execution_id = $1 AND ended_at IS NULL`,
+          [stageExecutionId]
+        )
+
+        // Complete iteration
+        await db.query(
+          `UPDATE workflow_iteration
+              SET status = 'COMPLETED',
+                  ended_at = CURRENT_TIMESTAMP
+            WHERE id = $1`,
+          [iteration.id]
+        )
+
+        // Complete workflow request
+        await db.query(
+          `UPDATE workflow_request
+              SET status = 'COMPLETED',
+                  completed_at = CURRENT_TIMESTAMP,
+                  current_stage_code = $2,
+                  version = version + 1
+            WHERE id = $1`,
+          [request.id, stageExecution.stageCode]
+        )
+
+        await insertStageAction(
+          db,
+          stageExecutionId,
+          actor.userId,
+          stageExecution.responsibleUnitId,
+          'STAGE_COMPLETED',
+          null,
+          {
+            isFinalCompletion: true,
+            templateVersion,
+            finalSnapshotId
+          }
+        )
+
+        await recordAuditEvent(db, {
+          actorUserId: actor.userId,
+          eventType: 'WORKFLOW_REQUEST_COMPLETED',
+          subjectType: 'workflow_request',
+          subjectId: request.id,
+          details: {
+            finalSnapshotId,
+            templateVersion,
+            sha256: finalSha256
+          }
+        })
+
+        return {
+          isCompleted: true as const,
+          finalSnapshotId,
+          requestId: request.id,
+          stageExecutionId
+        }
+      }
 
       // Determine next deterministic generic stage with request-type validation
       let nextStageCode: StageCode
@@ -961,79 +1088,51 @@ export class WorkflowEngineService {
            FROM request_candidate c
            JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
           WHERE c.request_id = $1
-          ORDER BY s.personnel_number`,
+          ORDER BY s.personnel_number, c.id`,
         [request.id]
       )
 
-      // If P4O, validate authoritative P4 decisions and build promotionDecisions snapshot payload
-      let promotionDecisionsPayload: Array<{
-        candidateId: string
-        personnelNumber: string
-        employeeName: string
-        sourceP4StageExecutionId: string
-        decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
-        targetJobTitle: string | null
-        effectiveNominatedJob: string | null
-        recommendation: string | null
-        notes: string | null
-      }> | undefined
-
-      let secondmentSelectionsPayload: Array<{
-        candidateId: string
-        personnelNumber: string
-        employeeName: string
-        sourceS3StageExecutionId: string
-        selectedOptionId: string
-        sourceS2StageExecutionId: string
-        positionTitle: string
-        organizationalDependency: string
-        qualificationStatusCode: string
-        qualificationStatusName: string | null
-      }> | undefined
+      let promotionDecisionsPayload: StageSnapshotData['promotionDecisions']
+      let secondmentSelectionsPayload: StageSnapshotData['secondmentSelections']
 
       if (stageExecution.stageCode === 'P4O') {
-        const p4ExecResult = await db.query<{ id: string }>(
+        const authoritativeP4 = await db.query<{ id: string }>(
           `SELECT id FROM stage_execution
             WHERE iteration_id = $1 AND stage_code = 'P4' AND status = 'COMPLETED'
             ORDER BY execution_no DESC
             LIMIT 1`,
           [iteration.id]
         )
-        const p4Exec = p4ExecResult.rows[0]
+        const p4Exec = authoritativeP4.rows[0]
         if (!p4Exec) {
           throw new AppError(409, 'Authoritative completed P4 execution not found in current iteration', 'AUTHORITATIVE_P4_NOT_FOUND')
         }
 
         const decisionsResult = await db.query<{
-          id: string
-          stageExecutionId: string
           candidateId: string
           personnelNumber: string
           employeeData: Record<string, unknown>
-          decisionType: string
+          stageExecutionId: string
+          decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
           targetJobTitle: string | null
-          recommendation: string | null
+          recommendation: string
           notes: string | null
         }>(
-          `SELECT d.id, d.stage_execution_id AS "stageExecutionId", d.candidate_id AS "candidateId",
-                  s.personnel_number AS "personnelNumber", s.employee_data AS "employeeData",
+          `SELECT d.candidate_id AS "candidateId", s.personnel_number AS "personnelNumber",
+                  s.employee_data AS "employeeData", d.stage_execution_id AS "stageExecutionId",
                   d.decision_type AS "decisionType", d.target_job_title AS "targetJobTitle",
                   d.recommendation, d.notes
              FROM promotion_decision d
              JOIN request_candidate c ON c.id = d.candidate_id
              JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
-            WHERE d.stage_execution_id = $1 AND c.request_id = $2
-            ORDER BY s.personnel_number`,
-          [p4Exec.id, request.id]
+            WHERE d.stage_execution_id = $1
+            ORDER BY s.personnel_number, c.id`,
+          [p4Exec.id]
         )
 
-        if (decisionsResult.rows.length === 0 || decisionsResult.rows.length !== candidatesResult.rows.length) {
-          throw new AppError(409, 'Authoritative P4 decisions are incomplete for this request', 'PROMOTION_DECISIONS_INCOMPLETE')
-        }
-
-        const hasOther = decisionsResult.rows.some(d => d.decisionType === 'OTHER_POSITION')
-        if (!hasOther) {
-          throw new AppError(409, 'P4O confirmation requires at least one OTHER_POSITION decision', 'P4O_CONFIRMATION_INVALID')
+        const hasOtherPosition = decisionsResult.rows.some(d => d.decisionType === 'OTHER_POSITION')
+        if (!hasOtherPosition) {
+          throw new AppError(409, 'P4O confirmation requires at least one candidate with OTHER_POSITION decision', 'P4O_CONFIRMATION_INVALID')
         }
 
         promotionDecisionsPayload = decisionsResult.rows.map(d => {
@@ -1045,7 +1144,7 @@ export class WorkflowEngineService {
             personnelNumber: d.personnelNumber,
             employeeName: String(empData.employeeName ?? ''),
             sourceP4StageExecutionId: d.stageExecutionId,
-            decisionType: d.decisionType as 'SAME_POSITION' | 'OTHER_POSITION',
+          decisionType: d.decisionType,
             targetJobTitle: isSame ? null : d.targetJobTitle,
             effectiveNominatedJob: isSame ? currentJob : d.targetJobTitle,
             recommendation: d.recommendation,
@@ -1099,43 +1198,44 @@ export class WorkflowEngineService {
                   o.source_stage_execution_id AS "sourceS2StageExecutionId",
                   o.candidate_id AS "optionCandidateId"
              FROM secondment_decision d
+             JOIN secondment_position_option o ON o.id = d.selected_option_id
              JOIN request_candidate c ON c.id = d.candidate_id
              JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
-             JOIN secondment_position_option o ON o.id = d.selected_option_id
              LEFT JOIN qualification_status_reference r ON r.code = o.qualification_status
-            WHERE d.stage_execution_id = $1 AND c.request_id = $2
-            ORDER BY s.personnel_number`,
-          [s3Exec.id, request.id]
+            WHERE d.stage_execution_id = $1
+            ORDER BY s.personnel_number, c.id`,
+          [s3Exec.id]
         )
 
-        if (selectionsResult.rows.length === 0 || selectionsResult.rows.length !== candidatesResult.rows.length) {
-          throw new AppError(409, 'Authoritative S3 selections are incomplete for this request', 'SECONDMENT_SELECTIONS_INCOMPLETE')
+        const selectionsByCandidate = new Map(selectionsResult.rows.map(selection => [selection.candidateId, selection]))
+        if (selectionsResult.rows.length !== candidatesResult.rows.length || selectionsByCandidate.size !== candidatesResult.rows.length) {
+          throw new AppError(409, 'All candidates must have valid selections before S4 confirmation', 'SECONDMENT_SELECTIONS_INCOMPLETE')
+        }
+        for (const candidate of candidatesResult.rows) {
+          const selection = selectionsByCandidate.get(candidate.id)
+          if (!selection) {
+            throw new AppError(409, 'All candidates must have valid selections before S4 confirmation', 'SECONDMENT_SELECTIONS_INCOMPLETE')
+          }
+          if (
+            selection.optionCandidateId !== candidate.id ||
+            selection.sourceS2StageExecutionId !== s2Exec.id
+          ) {
+            throw new AppError(400, 'Selected option is not valid for the authoritative S2 to S3 chain', 'INVALID_OPTION_SELECTION')
+          }
         }
 
-        for (const row of selectionsResult.rows) {
-          if (row.optionCandidateId !== row.candidateId) {
-            throw new AppError(409, `Selection for candidate ${row.personnelNumber} belongs to a different candidate`, 'INVALID_OPTION_SELECTION')
-          }
-          if (row.sourceS2StageExecutionId !== s2Exec.id) {
-            throw new AppError(409, `Selection for candidate ${row.personnelNumber} does not originate from authoritative S2 execution`, 'STALE_OPTION_SELECTION')
-          }
-        }
-
-        secondmentSelectionsPayload = selectionsResult.rows.map(row => {
-          const empData = (row.employeeData as Record<string, unknown>) ?? {}
-          return {
-            candidateId: row.candidateId,
-            personnelNumber: row.personnelNumber,
-            employeeName: String(empData.employeeName ?? ''),
-            sourceS3StageExecutionId: row.stageExecutionId,
-            selectedOptionId: row.selectedOptionId,
-            sourceS2StageExecutionId: row.sourceS2StageExecutionId,
-            positionTitle: row.positionTitle,
-            organizationalDependency: row.organizationalDependency,
-            qualificationStatusCode: row.qualificationStatus,
-            qualificationStatusName: row.qualificationStatusName ?? null
-          }
-        })
+        secondmentSelectionsPayload = selectionsResult.rows.map(sel => ({
+          candidateId: sel.candidateId,
+          personnelNumber: sel.personnelNumber,
+          employeeName: String(sel.employeeData?.employeeName ?? ''),
+          sourceS3StageExecutionId: sel.stageExecutionId,
+          selectedOptionId: sel.selectedOptionId,
+          positionTitle: sel.positionTitle,
+          organizationalDependency: sel.organizationalDependency,
+          qualificationStatusCode: sel.qualificationStatus,
+          qualificationStatusName: sel.qualificationStatusName ?? null,
+          sourceS2StageExecutionId: sel.sourceS2StageExecutionId
+        }))
       }
 
       // Freeze stage submission snapshot
@@ -1201,7 +1301,8 @@ export class WorkflowEngineService {
       await db.query(
         `UPDATE workflow_request
             SET current_stage_code = $2,
-                status = $3
+                status = $3,
+                version = version + 1
           WHERE id = $1`,
         [request.id, nextStageCode, newRequestStatus]
       )
@@ -1236,8 +1337,390 @@ export class WorkflowEngineService {
         )
       }
 
-      return await this.getStageById(db, nextExecutionId)
+      return {
+        isCompleted: false as const,
+        nextExecutionId
+      }
     })
+
+    if (txResult.isCompleted) {
+      if (this.pdfService) {
+        void this.pdfService.materializeFinalPdfPostCommit(txResult.requestId, txResult.finalSnapshotId)
+      }
+      return await this.getStageById(this.pool, txResult.stageExecutionId)
+    }
+
+    return await this.getStageById(this.pool, txResult.nextExecutionId)
+  }
+
+  async signAndAdvance(
+    stageExecutionIdValue: unknown,
+    input: SignAndAdvanceInput,
+    actor: WorkflowRequestContext,
+    requestEvidence?: { ipAddress?: string, userAgent?: string }
+  ): Promise<StageExecutionSummary> {
+    const stageExecutionId = uuid(stageExecutionIdValue, 'stageExecutionId')
+    const password = signaturePassword(input.password)
+    const signatureAssetId = uuid(input.signatureAssetId, 'signatureAssetId')
+    const jobTitleOverride = optionalText(input.jobTitleOverride, 'jobTitleOverride', 240)
+
+    const txResult = await withTransaction(this.pool, async db => {
+      await requireOperationalUser(db, actor.userId)
+      const { request, iteration, stageExecution } = await lockCurrentStageExecution(db, stageExecutionId)
+
+      if (!SIGNING_STAGE_CODES.has(stageExecution.stageCode)) {
+        throw new AppError(400, `Stage ${stageExecution.stageCode} is not an official signing stage`, 'SIGNING_UNSUPPORTED')
+      }
+
+      await requireCurrentUnitManager(db, actor.userId, stageExecution.responsibleUnitId)
+
+      // Lock signer account
+      const userRes = await db.query<{
+        id: string
+        username: string
+        displayName: string
+        jobTitle: string | null
+        passwordHash: string
+        isActive: boolean
+      }>(
+        `SELECT id, username, display_name AS "displayName", job_title AS "jobTitle",
+                password_hash AS "passwordHash", is_active AS "isActive"
+           FROM user_account
+          WHERE id = $1
+            FOR UPDATE`,
+        [actor.userId]
+      )
+      const signer = userRes.rows[0]
+      if (!signer || !signer.isActive) {
+        throw new AppError(401, 'Signer account is inactive or not found', 'SIGNER_ACCOUNT_INACTIVE')
+      }
+
+      // Lock & validate selected signature asset
+      const assetRes = await db.query<{
+        id: string
+        user_id: string
+        storage_key: string
+        sha256: string
+        is_active: boolean
+      }>(
+        `SELECT id, user_id, storage_key, sha256, is_active
+           FROM user_signature_asset
+          WHERE id = $1 AND user_id = $2
+            FOR UPDATE`,
+        [signatureAssetId, actor.userId]
+      )
+      const sigAsset = assetRes.rows[0]
+      if (!sigAsset || !sigAsset.is_active) {
+        throw new AppError(400, 'Selected signature asset is invalid or inactive', 'SIGNATURE_ASSET_INVALID')
+      }
+
+      // Validate effective job title
+      const effectiveJobTitle = (jobTitleOverride?.trim() || signer.jobTitle?.trim() || '')
+      if (!effectiveJobTitle) {
+        throw new AppError(400, 'Effective signer job title is required', 'SIGNER_JOB_TITLE_REQUIRED')
+      }
+      const jobTitleWasOverridden = Boolean(jobTitleOverride?.trim() && jobTitleOverride.trim() !== (signer.jobTitle ?? '').trim())
+
+      // Verify only after all authority, asset and title prerequisites have been
+      // locked/validated. No workflow mutation appears above this boundary.
+      if (!this.config) throw new AppError(500, 'Signing service configuration is unavailable', 'SIGNING_CONFIGURATION_MISSING')
+      const passwordVerifier = new DatabaseCurrentPasswordVerifier(new LocalAuthenticationProvider(this.pool, this.config))
+      if (!await passwordVerifier.verify(db, actor.userId, password)) {
+        await db.query(
+          `INSERT INTO security_event
+            (id, actor_user_id, event_type, ip_address, user_agent, details, created_at)
+           VALUES ($1, $2, 'SIGNATURE_PASSWORD_REJECTED', $3, $4, $5::jsonb, CURRENT_TIMESTAMP)`,
+          [randomUUID(), actor.userId, requestEvidence?.ipAddress ?? null, requestEvidence?.userAgent ?? null,
+            JSON.stringify({ stageExecutionId, requestId: request.id, stageCode: stageExecution.stageCode })]
+        )
+        return { outcome: 'PASSWORD_INVALID' as const }
+      }
+
+      // Load form sections and candidates
+      const formSectionsResult = await db.query<{
+        id: string
+        category: string
+        displayOrder: number
+        data: Record<string, unknown>
+      }>(
+        `SELECT id, category, display_order AS "displayOrder", data
+           FROM request_form_section
+          WHERE request_id = $1
+          ORDER BY display_order, category, id`,
+        [request.id]
+      )
+
+      const candidatesResult = await db.query<{
+        id: string
+        employeeSnapshotId: string
+        personnelNumber: string
+        frozenData: Record<string, unknown>
+        acceptedData: Record<string, unknown>
+      }>(
+        `SELECT c.id, c.employee_snapshot_id AS "employeeSnapshotId",
+                s.personnel_number AS "personnelNumber", c.frozen_data AS "frozenData",
+                c.accepted_data AS "acceptedData"
+           FROM request_candidate c
+           JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
+          WHERE c.request_id = $1
+          ORDER BY s.personnel_number, c.id`,
+        [request.id]
+      )
+
+      if (candidatesResult.rows.length === 0) {
+        throw new AppError(400, 'Request must contain at least one candidate before signing', 'CANDIDATES_REQUIRED')
+      }
+
+      let nextStageCode: StageCode
+      let promotionDecisionsPayload: StageSnapshotData['promotionDecisions']
+      let secondmentPositionOptionsPayload: StageSnapshotData['secondmentPositionOptions']
+      let secondmentSelectionsPayload: StageSnapshotData['secondmentSelections']
+
+      if (stageExecution.stageCode === 'P1') {
+        if (request.requestType !== 'PROMOTION') {
+          throw new AppError(400, 'Stage P1 is only valid for PROMOTION requests', 'INVALID_REQUEST_TYPE')
+        }
+        nextStageCode = 'P2'
+      } else if (stageExecution.stageCode === 'P2') {
+        if (request.requestType !== 'PROMOTION') {
+          throw new AppError(400, 'Stage P2 is only valid for PROMOTION requests', 'INVALID_REQUEST_TYPE')
+        }
+        nextStageCode = 'P3'
+      } else if (stageExecution.stageCode === 'P4') {
+        if (request.requestType !== 'PROMOTION') {
+          throw new AppError(400, 'Stage P4 is only valid for PROMOTION requests', 'INVALID_REQUEST_TYPE')
+        }
+        const p4Validation = await this.promotionService.validatePromotionP4AndResolveDestination(
+          db,
+          request.id,
+          iteration.id,
+          stageExecutionId
+        )
+        nextStageCode = p4Validation.nextStageCode
+        promotionDecisionsPayload = p4Validation.decisions.map(decision => ({
+          candidateId: decision.candidateId,
+          personnelNumber: decision.personnelNumber,
+          employeeName: decision.employeeName,
+          sourceP4StageExecutionId: decision.stageExecutionId,
+          decisionType: decision.decisionType,
+          targetJobTitle: decision.targetJobTitle,
+          effectiveNominatedJob: decision.effectiveNominatedJob,
+          recommendation: decision.recommendation,
+          notes: decision.notes
+        }))
+      } else if (stageExecution.stageCode === 'S1') {
+        if (request.requestType !== 'SECONDMENT') {
+          throw new AppError(400, 'Stage S1 is only valid for SECONDMENT requests', 'INVALID_REQUEST_TYPE')
+        }
+        nextStageCode = 'S2'
+      } else if (stageExecution.stageCode === 'S2') {
+        if (request.requestType !== 'SECONDMENT') {
+          throw new AppError(400, 'Stage S2 is only valid for SECONDMENT requests', 'INVALID_REQUEST_TYPE')
+        }
+        const s2Validation = await this.secondmentService.validateSecondmentS2ForSignoff(
+          db,
+          request.id,
+          iteration.id,
+          stageExecutionId
+        )
+        nextStageCode = 'S3'
+        secondmentPositionOptionsPayload = s2Validation.candidateOptions
+      } else if (stageExecution.stageCode === 'S3') {
+        if (request.requestType !== 'SECONDMENT') {
+          throw new AppError(400, 'Stage S3 is only valid for SECONDMENT requests', 'INVALID_REQUEST_TYPE')
+        }
+        const s3Validation = await this.secondmentService.validateSecondmentS3ForSignoff(
+          db,
+          request.id,
+          iteration.id,
+          stageExecutionId
+        )
+        nextStageCode = 'S4'
+        secondmentSelectionsPayload = s3Validation.selections.map(selection => ({
+          candidateId: selection.candidateId,
+          personnelNumber: selection.personnelNumber,
+          employeeName: selection.employeeName,
+          sourceS3StageExecutionId: selection.stageExecutionId,
+          selectedOptionId: selection.selectedOptionId,
+          sourceS2StageExecutionId: selection.sourceS2StageExecutionId,
+          positionTitle: selection.positionTitle,
+          organizationalDependency: selection.organizationalDependency,
+          qualificationStatusCode: selection.qualificationStatusCode,
+          qualificationStatusName: selection.qualificationStatusName
+        }))
+      } else {
+        throw new AppError(400, `Sign-and-advance not supported from stage ${stageExecution.stageCode}`, 'STAGE_ADVANCE_UNSUPPORTED')
+      }
+
+      // Freeze StageSubmissionSnapshot
+      await createStageSubmissionSnapshot(db, stageExecutionId, {
+        requestId: request.id,
+        requestNumber: request.requestNumber,
+        requestType: request.requestType,
+        routingUnitId: request.routingUnitId,
+        iterationId: iteration.id,
+        iterationNo: iteration.iterationNo,
+        stageExecutionId,
+        stageCode: stageExecution.stageCode,
+        executionNo: stageExecution.executionNo,
+        responsibleUnitId: stageExecution.responsibleUnitId,
+        formSections: formSectionsResult.rows,
+        candidates: candidatesResult.rows,
+        ...(promotionDecisionsPayload !== undefined ? { promotionDecisions: promotionDecisionsPayload } : {}),
+        ...(secondmentPositionOptionsPayload !== undefined ? { secondmentPositionOptions: secondmentPositionOptionsPayload } : {}),
+        ...(secondmentSelectionsPayload !== undefined ? { secondmentSelections: secondmentSelectionsPayload } : {}),
+        submittedAt: new Date().toISOString(),
+        submittedByUserId: actor.userId
+      })
+
+      // Resolve manager assignment & unit kind
+      const mgrRes = await db.query<{ id: string }>(
+        `SELECT id
+           FROM unit_manager_assignment
+          WHERE unit_id = $1 AND manager_user_id = $2 AND effective_to IS NULL`,
+        [stageExecution.responsibleUnitId, actor.userId]
+      )
+      if (!mgrRes.rows[0]) {
+        throw new AppError(409, 'Current manager assignment changed during signing', 'MANAGER_ASSIGNMENT_MISSING')
+      }
+      const unitRes = await db.query<{ kind: string }>(
+        `SELECT kind FROM operational_unit WHERE id = $1`,
+        [stageExecution.responsibleUnitId]
+      )
+
+      const signerSnapshot = {
+        signerUserId: signer.id,
+        signerUsername: signer.username,
+        signerName: signer.displayName,
+        signerJobTitle: effectiveJobTitle,
+        jobTitleWasOverridden,
+        operationalUnitId: stageExecution.responsibleUnitId,
+        operationalUnitKind: unitRes.rows[0]?.kind ?? '',
+        managerAssignmentId: mgrRes.rows[0].id,
+        signatureAssetId: sigAsset.id,
+        signatureSha256: sigAsset.sha256
+      }
+
+      // Insert WorkflowSignoff
+      const signoffId = randomUUID()
+      await db.query(
+        `INSERT INTO workflow_signoff
+          (id, stage_execution_id, signer_user_id, manager_assignment_id, signer_snapshot, signature_asset_id, signature_sha256, signed_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, CURRENT_TIMESTAMP)`,
+        [
+          signoffId,
+          stageExecutionId,
+          actor.userId,
+          mgrRes.rows[0].id,
+          JSON.stringify(signerSnapshot),
+          sigAsset.id,
+          sigAsset.sha256
+        ]
+      )
+
+      // Close current stage execution
+      await db.query(
+        `UPDATE stage_execution
+            SET status = 'COMPLETED',
+                work_state = 'COMPLETED',
+                completed_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [stageExecutionId]
+      )
+
+      // End active work assignment
+      await db.query(
+        `UPDATE work_assignment
+            SET ended_at = CURRENT_TIMESTAMP,
+                end_reason = 'STAGE_COMPLETED'
+          WHERE stage_execution_id = $1 AND ended_at IS NULL`,
+        [stageExecutionId]
+      )
+
+      // Next execution_no for destination stage
+      const execNoResult = await db.query<{ nextNo: number }>(
+        `SELECT COALESCE(MAX(execution_no), 0) + 1 AS "nextNo"
+           FROM stage_execution
+          WHERE iteration_id = $1 AND stage_code = $2`,
+        [iteration.id, nextStageCode]
+      )
+      const nextExecutionNo = Number(execNoResult.rows[0]?.nextNo ?? 1)
+
+      // Next operational unit
+      const nextUnit = await resolveResponsibleOperationalUnit(db, nextStageCode, request.routingUnitId)
+      const nextExecutionId = randomUUID()
+
+      await db.query(
+        `INSERT INTO stage_execution
+          (id, iteration_id, stage_code, execution_no, responsible_unit_id, status, work_state, opened_at, previous_execution_id)
+         VALUES ($1, $2, $3, $4, $5, 'OPEN', 'MANAGER_INBOX', CURRENT_TIMESTAMP, $6)`,
+        [nextExecutionId, iteration.id, nextStageCode, nextExecutionNo, nextUnit.id, stageExecutionId]
+      )
+
+      const newRequestStatus = request.status === 'DRAFT' ? 'ACTIVE' : request.status
+      await db.query(
+        `UPDATE workflow_request
+            SET current_stage_code = $2,
+                status = $3,
+                version = version + 1
+          WHERE id = $1`,
+        [request.id, nextStageCode, newRequestStatus]
+      )
+
+      await insertStageAction(
+        db,
+        stageExecutionId,
+        actor.userId,
+        stageExecution.responsibleUnitId,
+        'SIGN_AND_ADVANCE',
+        null,
+        {
+          advancedToStageCode: nextStageCode,
+          executionNo: nextExecutionNo,
+          signerJobTitle: effectiveJobTitle,
+          signatureAssetId: sigAsset.id
+        }
+      )
+
+      await recordAuditEvent(db, {
+        actorUserId: actor.userId,
+        eventType: 'STAGE_SIGNED_AND_ADVANCED',
+        subjectType: 'stage_execution',
+        subjectId: stageExecutionId,
+        details: {
+          nextStageCode,
+          nextExecutionId,
+          executionNo: nextExecutionNo,
+          signerJobTitle: effectiveJobTitle,
+          signatureAssetId: sigAsset.id
+        }
+      })
+
+      // Notify next manager if existing helper is active
+      const managerResult = await db.query<{ managerUserId: string }>(
+        `SELECT manager_user_id AS "managerUserId"
+           FROM unit_manager_assignment
+          WHERE unit_id = $1 AND effective_to IS NULL`,
+        [nextUnit.id]
+      )
+      if (managerResult.rows[0]?.managerUserId) {
+        await insertNotification(
+          db,
+          managerResult.rows[0].managerUserId,
+          'STAGE_INBOX_ARRIVED',
+          request.id,
+          nextExecutionId
+        )
+      }
+
+      return { outcome: 'SUCCESS' as const, nextExecutionId }
+    })
+
+    if (txResult.outcome === 'PASSWORD_INVALID') {
+      throw new AppError(401, 'Invalid signature password', 'SIGNATURE_PASSWORD_INVALID')
+    }
+
+    return await this.getStageById(this.pool, txResult.nextExecutionId)
   }
 
   async addNote(

@@ -8,6 +8,7 @@ export default defineConfig({
     'test/phase3-*.test.ts',
     'test/phase4-*.test.ts',
     'test/phase5-*.test.ts',
+    'test/phase6-*.test.ts',
     'test/config.test.ts'
 ],
     environment: 'node',

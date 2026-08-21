@@ -15,6 +15,8 @@ import { insertStageAction } from './workflow-engine-service.ts'
 import type {
   SecondmentPositionOptionInput,
   SecondmentPositionOptionSummary,
+  SecondmentS2PreparationInput,
+  SecondmentS2PreparationSummary,
   SecondmentS2CandidateOptionGroup,
   SecondmentS2ValidationResult,
   SecondmentS3ValidationResult,
@@ -25,6 +27,113 @@ import type {
 
 export class SecondmentWorkflowService {
   constructor(private readonly pool: Pool) {}
+
+  async upsertS2CandidatePreparation(
+    stageExecutionIdValue: unknown,
+    candidateIdValue: unknown,
+    input: SecondmentS2PreparationInput,
+    actor: WorkflowRequestContext
+  ): Promise<SecondmentS2PreparationSummary> {
+    const stageExecutionId = uuid(stageExecutionIdValue, 'stageExecutionId')
+    const candidateId = uuid(candidateIdValue, 'candidateId')
+    const lastPromotionReport = text(input.lastPromotionReport, 'lastPromotionReport', 4000, 1)
+    const jobCategoryCode = text(input.jobCategoryCode, 'jobCategoryCode', 80, 1)
+
+    return await withTransaction(this.pool, async db => {
+      await requireOperationalUser(db, actor.userId)
+      const { request, stageExecution } = await lockCurrentStageExecution(db, stageExecutionId)
+      if (request.requestType !== 'SECONDMENT') {
+        throw new AppError(400, 'Secondment preparation is only valid for SECONDMENT requests', 'INVALID_REQUEST_TYPE')
+      }
+      if (stageExecution.stageCode !== 'S2') {
+        throw new AppError(409, `Secondment preparation can only be edited at stage S2, current is ${stageExecution.stageCode}`, 'STAGE_NOT_S2')
+      }
+      if (stageExecution.status !== 'OPEN') {
+        throw new AppError(409, 'Stage execution is not OPEN', 'STAGE_NOT_OPEN')
+      }
+
+      const isMgr = await isCurrentUnitManager(db, actor.userId, stageExecution.responsibleUnitId)
+      if (!isMgr) {
+        const assignmentResult = await db.query<{ assignedToUserId: string }>(
+          `SELECT assigned_to_user_id AS "assignedToUserId"
+             FROM work_assignment
+            WHERE stage_execution_id = $1 AND ended_at IS NULL`,
+          [stageExecutionId]
+        )
+        const activeAssignment = assignmentResult.rows[0]
+        if (!activeAssignment || activeAssignment.assignedToUserId !== actor.userId) {
+          throw new AppError(403, 'Not authorized to edit Secondment preparation on this stage execution', 'NOT_AUTHORIZED_STAGE_EDITOR')
+        }
+        if (stageExecution.workState === 'MANAGER_REVIEW' || stageExecution.workState === 'COMPLETED') {
+          throw new AppError(403, 'Employee cannot edit Secondment preparation after submitting to manager for review', 'STAGE_NOT_EDITABLE')
+        }
+      }
+
+      const candidateResult = await db.query<{ id: string, requestId: string, personnelNumber: string, acceptedData: Record<string, unknown> | null }>(
+        `SELECT c.id, c.request_id AS "requestId", s.personnel_number AS "personnelNumber",
+                c.accepted_data AS "acceptedData"
+          FROM request_candidate c
+           JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
+          WHERE c.id = $1
+          FOR UPDATE`,
+        [candidateId]
+      )
+      const candidate = candidateResult.rows[0]
+      if (!candidate || candidate.requestId !== request.id) {
+        throw new AppError(404, 'Candidate not found in this workflow request', 'CANDIDATE_NOT_IN_REQUEST')
+      }
+
+      const categoryResult = await db.query<{ code: string, name: string }>(
+        `SELECT code, name FROM job_category_reference WHERE code = $1 AND is_active = TRUE`,
+        [jobCategoryCode]
+      )
+      const category = categoryResult.rows[0]
+      if (!category) {
+        throw new AppError(400, `Active job category reference not found for code: ${jobCategoryCode}`, 'INVALID_JOB_CATEGORY')
+      }
+
+      if (stageExecution.workState === 'ASSIGNED') {
+        await db.query(`UPDATE stage_execution SET work_state = 'IN_PROGRESS' WHERE id = $1`, [stageExecutionId])
+      }
+      const existingAcceptedData = candidate.acceptedData && typeof candidate.acceptedData === 'object' && !Array.isArray(candidate.acceptedData)
+        ? candidate.acceptedData
+        : {}
+      const nextAcceptedData = {
+        ...existingAcceptedData,
+        secondmentS2Preparation: {
+          lastPromotionReport,
+          jobCategoryCode: category.code,
+          jobCategoryName: category.name
+        }
+      }
+      await db.query(
+        `UPDATE request_candidate
+            SET accepted_data = $2::jsonb
+          WHERE id = $1`,
+        [
+          candidateId,
+          JSON.stringify(nextAcceptedData)
+        ]
+      )
+
+      await insertStageAction(db, stageExecutionId, actor.userId, stageExecution.responsibleUnitId, 'SECONDMENT_PREPARATION_SAVED', null, {
+        candidateId,
+        personnelNumber: candidate.personnelNumber,
+        lastPromotionReport,
+        jobCategoryCode: category.code,
+        jobCategoryName: category.name
+      })
+      await recordAuditEvent(db, {
+        actorUserId: actor.userId,
+        eventType: 'SECONDMENT_PREPARATION_SAVED',
+        subjectType: 'request_candidate',
+        subjectId: candidateId,
+        details: { requestId: request.id, stageExecutionId, jobCategoryCode: category.code }
+      })
+
+      return { candidateId, lastPromotionReport, jobCategoryCode: category.code, jobCategoryName: category.name }
+    })
+  }
 
   /**
    * Add a proposed position option for a candidate at stage S2 (Organization).
@@ -568,8 +677,10 @@ export class SecondmentWorkflowService {
       id: string
       personnelNumber: string
       employeeData: Record<string, unknown>
+      acceptedData: Record<string, unknown>
     }>(
-      `SELECT c.id, s.personnel_number AS "personnelNumber", s.employee_data AS "employeeData"
+      `SELECT c.id, s.personnel_number AS "personnelNumber", s.employee_data AS "employeeData",
+              c.accepted_data AS "acceptedData"
          FROM request_candidate c
          JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
         WHERE c.request_id = $1
@@ -603,6 +714,11 @@ export class SecondmentWorkflowService {
     )
     const activeRefMap = new Map(activeRefsResult.rows.map(r => [r.code, r.name]))
 
+    const activeCategoriesResult = await db.query<{ code: string, name: string }>(
+      `SELECT code, name FROM job_category_reference WHERE is_active = TRUE`
+    )
+    const activeCategoryMap = new Map(activeCategoriesResult.rows.map(category => [category.code, category.name]))
+
     const optionsByCandidate = new Map<string, typeof optionsResult.rows>()
     for (const opt of optionsResult.rows) {
       const list = optionsByCandidate.get(opt.candidateId) ?? []
@@ -613,6 +729,22 @@ export class SecondmentWorkflowService {
     const groups: SecondmentS2CandidateOptionGroup[] = []
 
     for (const candidate of candidatesResult.rows) {
+      const preparation = candidate.acceptedData?.secondmentS2Preparation
+      const prep = preparation && typeof preparation === 'object'
+        ? preparation as Record<string, unknown>
+        : {}
+      const lastPromotionReport = typeof prep.lastPromotionReport === 'string' ? prep.lastPromotionReport.trim() : ''
+      if (!lastPromotionReport) {
+        throw new AppError(400, `Candidate ${candidate.personnelNumber} requires lastPromotionReport`, 'SECONDMENT_LAST_PROMOTION_REPORT_REQUIRED')
+      }
+      const jobCategoryCode = typeof prep.jobCategoryCode === 'string' ? prep.jobCategoryCode.trim() : ''
+      if (!jobCategoryCode) {
+        throw new AppError(400, `Candidate ${candidate.personnelNumber} requires a job category`, 'SECONDMENT_JOB_CATEGORY_REQUIRED')
+      }
+      const jobCategoryName = activeCategoryMap.get(jobCategoryCode)
+      if (!jobCategoryName) {
+        throw new AppError(400, `Candidate ${candidate.personnelNumber} has an invalid or inactive job category: ${jobCategoryCode}`, 'INVALID_JOB_CATEGORY')
+      }
       const candidateOpts = optionsByCandidate.get(candidate.id) ?? []
       if (candidateOpts.length === 0) {
         throw new AppError(400, `Candidate ${candidate.personnelNumber} requires at least one position option`, 'SECONDMENT_OPTIONS_REQUIRED')
@@ -653,6 +785,9 @@ export class SecondmentWorkflowService {
         candidateId: candidate.id,
         personnelNumber: candidate.personnelNumber,
         employeeName: String(empData.employeeName ?? ''),
+        lastPromotionReport,
+        jobCategoryCode,
+        jobCategoryName,
         options: summaries
       })
     }

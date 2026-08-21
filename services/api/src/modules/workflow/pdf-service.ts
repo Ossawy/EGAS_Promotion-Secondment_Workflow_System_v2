@@ -4,469 +4,550 @@ import { basename, join, resolve, sep } from 'node:path'
 import type { Pool } from 'pg'
 import type { AppConfig } from '../../config/env.ts'
 import { withTransaction } from '../../db/transaction.ts'
-import type { Queryable } from '../../db/types.ts'
 import { AppError } from '../../shared/errors.ts'
 import { uuid } from '../../shared/validation.ts'
-import type { AuthContext } from '../auth/types.ts'
 import {
-  buildFormSnapshot,
-  PDF_TEMPLATE_V1,
-  PDF_TEMPLATE_V2,
-  PDF_TEMPLATE_VERSION,
-  snapshotSha256,
-  type FormSnapshot
+  type FinalFormSnapshotPayload,
+  type FinalFormCandidate,
+  computeSnapshotSha256,
+  PROMOTION_TEMPLATE_V3,
+  SECONDMENT_TEMPLATE_BASELINE
 } from './form-snapshot.ts'
 import {
-  renderAuditPdf,
-  renderOfficialPdfV1,
-  renderOfficialPdfV2,
-  type AuditPdfEntry
+  type AuditPdfEntry,
+  renderAuditTrailPdf,
+  renderOfficialFormPdf
 } from './pdf-renderer.ts'
-import { SignatureService } from './signature-service.ts'
+import { requireRequestReadAccess } from './workflow-auth.ts'
+import type { WorkflowRequestContext } from './workflow-types.ts'
+import { PdfRenderLimiter } from './pdf-render-limiter.ts'
 
-type FrozenDocumentRow = {
-  id: string
-  requestId: string
-  iterationId: string
-  documentState: 'RECEIVED' | 'FINAL'
-  receivedSnapshotId: string | null
-  snapshotJson: FormSnapshot
-  snapshotSha256: string
-  templateVersion: string
-  storageKey: string | null
-  fileSha256: string | null
-  fileSizeBytes: string | number | null
-  routingUnitId: string | null
-  requestNumber: string
-}
-
-export type PdfResult = { buffer: Buffer, filename: string, state: 'RECEIVED'|'DRAFT'|'FINAL'|'AUDIT_LOG' }
-export type AdminAuditPdfInput = {
-  requestId?: unknown
-  routingUnitId?: unknown
-  periodCode?: unknown
-  periodStart?: unknown
-  periodEnd?: unknown
-}
-
-class RenderLimiter {
-  private active = 0
-  private readonly queue: Array<() => void> = []
-
-  constructor(private readonly maximum: number, private readonly maxQueued: number, private readonly timeoutMs: number) {}
-
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.active >= this.maximum) {
-      if (this.queue.length >= this.maxQueued) throw new AppError(503, 'PDF renderer is busy', 'PDF_RENDERER_BUSY')
-      await new Promise<void>(resolve => this.queue.push(resolve))
-    }
-    this.active += 1
-    let timer: ReturnType<typeof setTimeout> | undefined; let deferredRelease = false
-    const task = operation()
-    const release = (): void => {
-      this.active -= 1
-      this.queue.shift()?.()
-    }
-    try {
-      return await Promise.race([
-        task,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new AppError(503, 'PDF rendering timed out', 'PDF_RENDER_TIMEOUT')), this.timeoutMs)
-        })
-      ])
-    } catch (error) {
-      if (error instanceof AppError && error.code === 'PDF_RENDER_TIMEOUT') {
-        deferredRelease = true
-        void task.finally(release).catch(() => undefined)
-      }
-      throw error
-    } finally {
-      if (timer) clearTimeout(timer)
-      if (!deferredRelease) release()
-    }
-  }
-}
-
-function sha256(content: Buffer): string { return createHash('sha256').update(content).digest('hex') }
-
-function assertSnapshot(value: unknown): FormSnapshot {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AppError(500, 'Stored PDF snapshot is invalid', 'PDF_SNAPSHOT_INVALID')
-  const snapshot = value as Partial<FormSnapshot>
-  if (snapshot.schemaVersion !== 1 || !['RECEIVED','DRAFT','FINAL'].includes(String(snapshot.kind))
-    || !snapshot.request || !Array.isArray(snapshot.candidates) || !Array.isArray(snapshot.signoffs)
-    || !Array.isArray(snapshot.approvals)) {
-    throw new AppError(500, 'Stored PDF snapshot is invalid', 'PDF_SNAPSHOT_INVALID')
-  }
-  return snapshot as FormSnapshot
-}
+const STORAGE_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.pdf$/i
+const SIG_STORAGE_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/i
 
 export class PdfService {
-  private readonly storageRoot: string
-  private readonly limiter: RenderLimiter
-  private readonly signatures: SignatureService
-  private readonly inFlight = new Map<string, Promise<Buffer>>()
-
-  constructor(private readonly pool: Pool, private readonly config: AppConfig) {
-    this.storageRoot = resolve(config.pdf.storageDirectory)
-    this.limiter = new RenderLimiter(config.pdf.maxConcurrentRenders, config.pdf.maxQueuedRenders, config.pdf.renderTimeoutMs)
-    this.signatures = new SignatureService(pool, config)
+  private readonly limiter: PdfRenderLimiter
+  constructor(
+    private readonly pool: Pool,
+    private readonly config: AppConfig
+  ) {
+    this.limiter = new PdfRenderLimiter(config.pdf.maxConcurrentRenders, config.pdf.maxQueuedRenders, config.pdf.renderTimeoutMs)
   }
 
-  async documents(requestValue: unknown, actor: AuthContext): Promise<Record<string, unknown>> {
-    const requestId = uuid(requestValue, 'requestId')
-    await this.assertRequestAccess(requestId, actor)
-    const received = await this.pool.query<Record<string, unknown>>(
-      `SELECT s.id AS "snapshotId",s.stageTask_id AS "taskId",t.stagecode AS "stageCode",
-              i.iterationno AS "iterationNo",s.receivedat AS "receivedAt",s.snapshotsha256 AS "snapshotSha256"
-         FROM egas_stagereceivedsnapshot s
-         JOIN egas_stagetask t ON t.id=s.stagetask_id
-         JOIN egas_workflowiteration i ON i.id=s.iteration_id
-        WHERE s.request_id=$1 AND s.recipientuser_id=$2 AND s.recipientrolesnapshot=$3
-        ORDER BY i.iterationno,t.openedat,s.id`, [requestId, actor.userId, actor.activeRole]
-    )
-    const request = await this.pool.query<{ status: string, createdById: string }>(
-      `SELECT status,createdby_id AS "createdById" FROM egas_workflowrequest WHERE id=$1`, [requestId]
-    )
-    if (!request.rows[0]) throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
-    return {
-      received: received.rows.map(row => ({ ...row, receivedAt: new Date(String(row.receivedAt)).toISOString() })),
-      finalAvailable: request.rows[0].status === 'COMPLETED'
-        && actor.activeRole === 'EMPLOYEE_AFFAIRS' && request.rows[0].createdById === actor.userId
+  private resolvePdfPath(storageKey: string): string {
+    const cleanKey = basename(storageKey)
+    if (!STORAGE_KEY_PATTERN.test(cleanKey)) {
+      throw new AppError(400, 'Invalid PDF storage key', 'PDF_STORAGE_KEY_INVALID')
     }
-  }
-
-  async draft(requestValue: unknown, actor: AuthContext): Promise<PdfResult> {
-    const requestId = uuid(requestValue, 'requestId')
-    await this.assertRequestAccess(requestId, actor)
-    const context = await this.pool.query<{ iterationId: string, requestNumber: string, routingUnitId: string | null }>(
-      `SELECT i.id AS "iterationId",r.requestnumber AS "requestNumber",r.routingunit_id AS "routingUnitId"
-         FROM egas_workflowrequest r JOIN egas_workflowiteration i ON i.request_id=r.id AND i.iterationno=r.currentiterationno
-        WHERE r.id=$1`, [requestId]
-    )
-    if (!context.rows[0]) throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
-    const snapshot = await buildFormSnapshot(this.pool, requestId, context.rows[0].iterationId, 'DRAFT', null)
-    const buffer = await this.render(
-      snapshot,
-      PDF_TEMPLATE_VERSION
-    )
-    await this.log(actor, 'FORM', 'DRAFT', requestId, null, context.rows[0].routingUnitId, PDF_TEMPLATE_VERSION, buffer)
-    return { buffer, filename: `EGAS-${context.rows[0].requestNumber}-draft.pdf`, state: 'DRAFT' }
-  }
-
-  async received(requestValue: unknown, snapshotValue: unknown, actor: AuthContext): Promise<PdfResult> {
-    const requestId = uuid(requestValue, 'requestId'); const receivedSnapshotId = uuid(snapshotValue, 'snapshotId')
-    const source = await this.pool.query<{ iterationId: string, snapshotJson: FormSnapshot, snapshotSha256: string, templateVersion: string, requestNumber: string }>(
-      `SELECT s.iteration_id AS "iterationId",s.snapshotjson AS "snapshotJson",s.snapshotsha256 AS "snapshotSha256",
-               s.templateversion AS "templateVersion",
-               r.requestnumber AS "requestNumber"
-          FROM egas_stagereceivedsnapshot s JOIN egas_workflowrequest r ON r.id=s.request_id
-         WHERE s.id=$1 AND s.request_id=$2 AND s.recipientuser_id=$3 AND s.recipientrolesnapshot=$4`,
-      [receivedSnapshotId, requestId, actor.userId, actor.activeRole]
-    )
-    if (!source.rows[0]) throw new AppError(404, 'Received-stage PDF not found', 'PDF_RECEIVED_NOT_FOUND')
-    const snapshot = assertSnapshot(source.rows[0].snapshotJson)
-    if (snapshotSha256(snapshot) !== source.rows[0].snapshotSha256) {
-      throw new AppError(409, 'Received-stage snapshot checksum failed', 'PDF_SNAPSHOT_CHECKSUM_FAILED')
+    const baseDir = resolve(this.config.pdf.storageDirectory)
+    const filePath = resolve(join(baseDir, cleanKey))
+    if (!filePath.startsWith(baseDir + sep) && filePath !== baseDir) {
+      throw new AppError(400, 'Invalid PDF path traversal', 'PDF_PATH_TRAVERSAL')
     }
-    const documentId = await withTransaction(this.pool, async db => {
-      await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`egas.pdf.received.${receivedSnapshotId}`])
-      const existing = await db.query<{ id: string }>(
-        `SELECT id FROM egas_frozenpdfdocument WHERE stagereceivedsnapshot_id=$1 AND documentstate='RECEIVED'`, [receivedSnapshotId]
+    return filePath
+  }
+
+  private resolveSigPath(storageKey: string): string {
+    const cleanKey = basename(storageKey)
+    if (!SIG_STORAGE_KEY_PATTERN.test(cleanKey)) {
+      throw new AppError(400, 'Invalid signature storage key', 'SIGNATURE_STORAGE_KEY_INVALID')
+    }
+    const baseDir = resolve(this.config.signatures.storageDirectory)
+    const filePath = resolve(join(baseDir, cleanKey))
+    if (!filePath.startsWith(baseDir + sep) && filePath !== baseDir) {
+      throw new AppError(400, 'Invalid signature path traversal', 'SIGNATURE_PATH_TRAVERSAL')
+    }
+    return filePath
+  }
+
+  private async loadVerifiedSignatureImages(
+    signoffs: Array<{ signatureAssetId: string, signatureSha256: string }>
+  ): Promise<Map<string, Buffer>> {
+    const imageMap = new Map<string, Buffer>()
+    for (const s of signoffs) {
+      if (!s.signatureAssetId) continue
+      const assetResult = await this.pool.query<{ storage_key: string, sha256: string }>(
+        `SELECT storage_key, sha256 FROM user_signature_asset WHERE id = $1`,
+        [s.signatureAssetId]
       )
-      if (existing.rows[0]) return existing.rows[0].id
-      const id = randomUUID()
-      await db.query(
-  `INSERT INTO egas_frozenpdfdocument
-    (
-      id,
-      request_id,
-      iteration_id,
-      documentstate,
-      stagereceivedsnapshot_id,
-      snapshotjson,
-      snapshotsha256,
-      templateversion,
-      frozenat
-    )
-   VALUES (
-      $1,
-      $2,
-      $3,
-      'RECEIVED',
-      $4,
-      $5::jsonb,
-      $6,
-      $7,
-      CURRENT_TIMESTAMP
-   )`,
-  [
-    id,
-    requestId,
-    source.rows[0]!.iterationId,
-    receivedSnapshotId,
-    JSON.stringify(snapshot),
-    source.rows[0]!.snapshotSha256,
-    source.rows[0]!.templateVersion
-  ]
-)
-      return id
-    })
-    const result = await this.serveFrozen(documentId, actor)
-    return { ...result, filename: `EGAS-${source.rows[0].requestNumber}-received.pdf`, state: 'RECEIVED' }
-  }
-
-  async final(requestValue: unknown, actor: AuthContext): Promise<PdfResult> {
-    const requestId = uuid(requestValue, 'requestId')
-    const document = await this.pool.query<{ id: string, requestNumber: string }>(
-      `SELECT d.id,r.requestnumber AS "requestNumber" FROM egas_frozenpdfdocument d
-       JOIN egas_workflowrequest r ON r.id=d.request_id
-       WHERE d.request_id=$1 AND d.documentstate='FINAL' AND r.status='COMPLETED'
-         AND r.createdby_id=$2 AND $3='EMPLOYEE_AFFAIRS'`, [requestId, actor.userId, actor.activeRole]
-    )
-    if (!document.rows[0]) throw new AppError(404, 'Final PDF not found', 'PDF_FINAL_NOT_FOUND')
-    const result = await this.serveFrozen(document.rows[0].id, actor)
-    return { ...result, filename: `EGAS-${document.rows[0].requestNumber}-final.pdf`, state: 'FINAL' }
-  }
-
-  async requestAudit(requestValue: unknown, actor: AuthContext): Promise<PdfResult> {
-    const requestId = uuid(requestValue, 'requestId')
-    const request = await this.pool.query<{ requestNumber: string, currentStage: string, routingUnitId: string | null }>(
-      `SELECT requestnumber AS "requestNumber",currentstage AS "currentStage",routingunit_id AS "routingUnitId"
-         FROM egas_workflowrequest WHERE id=$1 AND createdby_id=$2 AND $3='EMPLOYEE_AFFAIRS'`,
-      [requestId, actor.userId, actor.activeRole]
-    )
-    if (!request.rows[0]) throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
-    const entries = await this.auditEntries(this.pool, requestId)
-    const buffer = await this.limiter.run(() => renderAuditPdf(
-      `سجل تدقيق الطلب ${request.rows[0]!.requestNumber}`, request.rows[0]!.currentStage, entries, this.config.pdf.maxOutputBytes
-    ))
-    await this.log(
-      actor,
-      'AUDIT_LOG',
-      'DRAFT',
-      requestId,
-      null,
-      request.rows[0].routingUnitId,
-      PDF_TEMPLATE_VERSION,
-      buffer
-    )
-    return { buffer, filename: `EGAS-${request.rows[0].requestNumber}-audit.pdf`, state: 'AUDIT_LOG' }
-  }
-
-  async adminAudit(input: AdminAuditPdfInput, actor: AuthContext): Promise<PdfResult> {
-    if (actor.activeRole !== 'ADMIN') throw new AppError(403, 'Active ADMIN role required', 'ACTIVE_ROLE_REQUIRED')
-    const requestId = input.requestId === undefined || input.requestId === '' ? null : uuid(input.requestId, 'requestId')
-    const routingUnitId = input.routingUnitId === undefined || input.routingUnitId === '' ? null : uuid(input.routingUnitId, 'routingUnitId')
-    const periodCodes = ['DAILY','WEEKLY','MONTHLY','QUARTERLY','HALF_YEARLY','YEARLY']
-    const periodCode = typeof input.periodCode === 'string' && periodCodes.includes(input.periodCode) ? input.periodCode : null
-    const periodStart = this.reportDate(input.periodStart, 'periodStart')
-    const periodEnd = this.reportDate(input.periodEnd, 'periodEnd')
-    if (!requestId && (!routingUnitId || !periodCode || !periodStart || !periodEnd)) {
-      throw new AppError(400, 'Department reports require routingUnitId, periodCode, periodStart, and periodEnd', 'PDF_AUDIT_SCOPE_REQUIRED')
-    }
-    if (periodStart && periodEnd) {
-      const start = new Date(`${periodStart}T00:00:00.000Z`); const end = new Date(`${periodEnd}T00:00:00.000Z`)
-      const days = (end.getTime() - start.getTime()) / 86_400_000
-      if (days < 0 || days > 366) throw new AppError(400, 'Audit report period must be 0-366 days', 'PDF_AUDIT_PERIOD_INVALID')
-    }
-    const result = await this.pool.query<AuditPdfEntry>(
-      `SELECT r.requestnumber AS "requestNumber",c.employeenamesnapshot AS "candidateName",
-              a.actornamesnapshot AS "actorName",u.username AS "actorUsername",a.actorrolesnapshot AS "actorRole",
-              a.actioncode AS "actionCode",a.fromstage AS "fromStage",a.tostage AS "toStage",a.reason,
-              a.createdat AS "createdAt"
-         FROM egas_auditevent a JOIN egas_workflowrequest r ON r.id=a.request_id
-         LEFT JOIN egas_requestcandidate c ON c.id=a.requestcandidate_id
-         LEFT JOIN egas_useraccount u ON u.id=a.actoruser_id
-        WHERE ($1::varchar IS NULL OR a.request_id=$1)
-          AND ($2::varchar IS NULL OR a.routingunit_id=$2)
-          AND ($3::date IS NULL OR a.createdat >= $3::date)
-          AND ($4::date IS NULL OR a.createdat < ($4::date + INTERVAL '1 day'))
-        ORDER BY a.createdat,a.id LIMIT 5001`, [requestId, routingUnitId, periodStart, periodEnd]
-    )
-    if (result.rows.length > 5_000) throw new AppError(413, 'Audit report exceeds 5,000 events; narrow the period', 'PDF_AUDIT_TOO_LARGE')
-    const entries = result.rows.map(row => ({ ...row, createdAt: new Date(row.createdAt).toISOString() }))
-    const title = requestId ? 'سجل تدقيق طلب' : 'سجل تدقيق وحدة مسار'
-    const buffer = await this.limiter.run(() => renderAuditPdf(title, requestId ? 'طلب واحد' : `${periodCode}: ${periodStart} — ${periodEnd}`,
-      entries, this.config.pdf.maxOutputBytes))
-    await this.pool.query(
-      `INSERT INTO egas_pdfgenerationlog
-        (id,generatedby_id,documenttype,documentstate,request_id,routingunit_id,periodcode,
-         periodstart,periodend,templateversion,filesha256,generatedat)
-       VALUES ($1,$2,'AUDIT_LOG','DRAFT',$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP)`,
-      [randomUUID(), actor.userId, requestId, routingUnitId, periodCode, periodStart, periodEnd,
-        PDF_TEMPLATE_VERSION, sha256(buffer)]
-    )
-    return { buffer, filename: requestId ? `EGAS-${requestId}-audit.pdf` : `EGAS-routing-audit.pdf`, state: 'AUDIT_LOG' }
-  }
-
-  private async auditEntries(db: Queryable, requestId: string): Promise<AuditPdfEntry[]> {
-    const result = await db.query<AuditPdfEntry>(
-      `SELECT r.requestnumber AS "requestNumber",c.employeenamesnapshot AS "candidateName",
-              a.actornamesnapshot AS "actorName",u.username AS "actorUsername",a.actorrolesnapshot AS "actorRole",
-              a.actioncode AS "actionCode",a.fromstage AS "fromStage",a.tostage AS "toStage",a.reason,
-              a.createdat AS "createdAt"
-         FROM egas_auditevent a JOIN egas_workflowrequest r ON r.id=a.request_id
-         LEFT JOIN egas_requestcandidate c ON c.id=a.requestcandidate_id
-         LEFT JOIN egas_useraccount u ON u.id=a.actoruser_id
-        WHERE a.request_id=$1 ORDER BY a.createdat,a.id`, [requestId]
-    )
-    return result.rows.map(row => ({ ...row, createdAt: new Date(row.createdAt).toISOString() }))
-  }
-
-  private async assertRequestAccess(requestId: string, actor: AuthContext): Promise<void> {
-    if (actor.activeRole === 'EMPLOYEE_AFFAIRS') {
-      const owned = await this.pool.query(`SELECT 1 FROM egas_workflowrequest WHERE id=$1 AND createdby_id=$2`, [requestId, actor.userId])
-      if (owned.rows[0]) return
-    } else {
-      const stages = actor.activeRole === 'ORGANIZATION' ? ['P2','P4O','S2','S4']
-        : actor.activeRole === 'APPROVING_AUTHORITY' ? ['P4','S3'] : []
-      if (stages.length) {
-        const participated = await this.pool.query(
-          `SELECT 1 FROM egas_stagetask WHERE request_id=$1 AND assigneduser_id=$2 AND stagecode=ANY($3::varchar[]) LIMIT 1`,
-          [requestId, actor.userId, stages]
-        )
-        if (participated.rows[0]) return
+      const row = assetResult.rows[0]
+      if (!row) {
+        throw new AppError(500, 'Signature asset referenced by frozen evidence is missing', 'SIGNATURE_EVIDENCE_MISSING')
       }
-    }
-    throw new AppError(404, 'Workflow request not found', 'WORKFLOW_REQUEST_NOT_FOUND')
-  }
 
-  private async serveFrozen(documentId: string, actor: AuthContext): Promise<{ buffer: Buffer }> {
-    let promise = this.inFlight.get(documentId)
-    if (!promise) {
-      promise = this.ensureMaterialized(documentId)
-      this.inFlight.set(documentId, promise)
-      void promise.finally(() => this.inFlight.delete(documentId)).catch(() => undefined)
-    }
-    const buffer = await promise
-    const row = await this.document(documentId)
-    await this.log(actor, 'FORM', row.documentState, row.requestId, row.receivedSnapshotId, row.routingUnitId, row.templateVersion, buffer)
-    return { buffer }
-  }
-
-  private async ensureMaterialized(documentId: string): Promise<Buffer> {
-    return await withTransaction(this.pool, async db => {
-      await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`egas.pdf.document.${documentId}`])
-      const row = await this.document(documentId, db, true)
-      const snapshot = assertSnapshot(row.snapshotJson)
-      if (snapshotSha256(snapshot) !== row.snapshotSha256) throw new AppError(409, 'Frozen PDF snapshot checksum failed', 'PDF_SNAPSHOT_CHECKSUM_FAILED')
-      if (row.storageKey) {
-        const content = await readFile(this.controlledPath(row.storageKey))
-        if (sha256(content) !== row.fileSha256) throw new AppError(409, 'Frozen PDF file checksum failed', 'PDF_FILE_CHECKSUM_FAILED')
-        return content
-      }
-      const content = await this.render(snapshot, row.templateVersion)
-      const storageKey = `${randomUUID()}.pdf`; const target = this.controlledPath(storageKey)
-      await mkdir(this.storageRoot, { recursive: true, mode: 0o700 })
-      await writeFile(target, content, { flag: 'wx', mode: 0o600 })
+      const filePath = this.resolveSigPath(row.storage_key)
+      let buffer: Buffer
       try {
-        const updated = await db.query(
-          `UPDATE egas_frozenpdfdocument SET storagekey=$2,filesha256=$3,filesizebytes=$4,materializedat=CURRENT_TIMESTAMP
-            WHERE id=$1 RETURNING id`, [documentId, storageKey, sha256(content), content.length]
-        )
-        if (!updated.rows[0]) throw new AppError(409, 'PDF evidence changed concurrently', 'PDF_MATERIALIZATION_CONFLICT')
-      } catch (error) {
-        await unlink(target).catch(() => undefined)
-        throw error
+        buffer = await readFile(filePath)
+      } catch {
+        throw new AppError(500, 'Signature asset file missing from disk', 'SIGNATURE_FILE_MISSING')
       }
-      return content
-    })
+
+      const hash = createHash('sha256').update(buffer).digest('hex')
+      if (hash !== s.signatureSha256) {
+        throw new AppError(500, 'Signature asset integrity checksum mismatch', 'SIGNATURE_INTEGRITY_MISMATCH')
+      }
+
+      imageMap.set(s.signatureAssetId, buffer)
+    }
+    return imageMap
   }
 
-  private async render(
-    snapshot: FormSnapshot,
-    templateVersion: string
-  ): Promise<Buffer> {
-    /*
-     * V2 is intentionally NOT enabled yet.
-     *
-     * Once the V2 renderer exists, this becomes the
-     * V1/V2 dispatcher.
-     */
-    const images = new Map<string, Buffer>()
+  async getCurrentPdf(
+    requestIdValue: unknown,
+    actor: WorkflowRequestContext
+  ): Promise<{ buffer: Buffer, filename: string }> {
+    const requestId = uuid(requestIdValue, 'requestId')
 
-    for (const signoff of snapshot.signoffs) {
-      const assetId = String(signoff.signatureAssetId ?? '')
-      const hash = String(signoff.signatureSha256 ?? '')
-      if (assetId && hash && !images.has(assetId)) images.set(assetId, await this.signatures.verifiedEvidenceContent(assetId, hash))
-    }
-
-    if (templateVersion === PDF_TEMPLATE_V1) {
-      return await this.limiter.run(
-        () =>
-          renderOfficialPdfV1(
-            snapshot,
-            images,
-            this.config.pdf.maxOutputBytes
-          )
-      )
-    }
-
-    if (templateVersion === PDF_TEMPLATE_V2) {
-      return await this.limiter.run(
-        () =>
-          renderOfficialPdfV2(
-            snapshot,
-            images,
-            this.config.pdf.maxOutputBytes
-          )
-      )
-    }
-
-    throw new AppError(
-      500,
-      `Unsupported PDF template version: ${templateVersion}`,
-      'PDF_TEMPLATE_UNSUPPORTED'
+    // 1. Authorize read access
+    await requireRequestReadAccess(this.pool, actor.userId, requestId)
+    const requestResult = await this.pool.query<{ id: string, requestNumber: string, requestType: 'PROMOTION' | 'SECONDMENT', routingUnitId: string | null, status: string, currentIterationId: string | null }>(
+      `SELECT id, request_number AS "requestNumber", request_type AS "requestType", routing_unit_id AS "routingUnitId", status, current_iteration_id AS "currentIterationId" FROM workflow_request WHERE id = $1`,
+      [requestId]
     )
-  }
+    const request = requestResult.rows[0]
+    if (!request) throw new AppError(404, 'Workflow request not found', 'REQUEST_NOT_FOUND')
 
-  private async document(id: string, db: Queryable = this.pool, lock = false): Promise<FrozenDocumentRow> {
-    const result = await db.query<FrozenDocumentRow>(
-      `SELECT d.id,d.request_id AS "requestId",d.iteration_id AS "iterationId",d.documentstate AS "documentState",
-              d.stagereceivedsnapshot_id AS "receivedSnapshotId",d.snapshotjson AS "snapshotJson",
-              d.snapshotsha256 AS "snapshotSha256",d.templateversion AS "templateVersion",d.storagekey AS "storageKey",d.filesha256 AS "fileSha256",
-              d.filesizebytes AS "fileSizeBytes",r.routingunit_id AS "routingUnitId",r.requestnumber AS "requestNumber"
-          FROM egas_frozenpdfdocument d JOIN egas_workflowrequest r ON r.id=d.request_id WHERE d.id=$1${lock ? ' FOR UPDATE' : ''}`,
-      [id]
+    // 2. Fetch current active iteration
+    const iterResult = await this.pool.query<{ id: string, iteration_no: number }>(
+      `SELECT id, iteration_no FROM workflow_iteration WHERE id = $1`,
+      [request.currentIterationId]
     )
-    if (!result.rows[0]) throw new AppError(404, 'PDF evidence not found', 'PDF_NOT_FOUND')
-    return result.rows[0]
+    const iteration = iterResult.rows[0]
+    if (!iteration) {
+      throw new AppError(404, 'No active iteration found for request', 'ITERATION_NOT_FOUND')
+    }
+
+    // 3. Routing Unit info
+    let routingUnit: { id: string, code: string, nameAr: string } | null = null
+    if (request.routingUnitId) {
+      const ruResult = await this.pool.query<{ id: string, code: string, name_ar: string }>(
+        `SELECT id, code, name_ar FROM routing_unit WHERE id = $1`,
+        [request.routingUnitId]
+      )
+      if (ruResult.rows[0]) {
+        routingUnit = {
+          id: ruResult.rows[0].id,
+          code: ruResult.rows[0].code,
+          nameAr: ruResult.rows[0].name_ar
+        }
+      }
+    }
+
+    // 4. Fetch current candidates
+    const candResult = await this.pool.query<{
+      candidateId: string
+      personnelNumber: string
+      employeeData: Record<string, unknown>
+      acceptedData: Record<string, unknown>
+      snapshotYear: number | null
+    }>(
+      `SELECT rc.id AS "candidateId",
+              eas.personnel_number AS "personnelNumber",
+               rc.frozen_data AS "employeeData",
+              rc.accepted_data AS "acceptedData",
+              eas.snapshot_year AS "snapshotYear"
+         FROM request_candidate rc
+         JOIN employee_annual_snapshot eas ON eas.id = rc.employee_snapshot_id
+        WHERE rc.request_id = $1
+        ORDER BY eas.personnel_number, rc.id`,
+      [requestId]
+    )
+
+    const cycleYear = candResult.rows[0]?.snapshotYear ?? null
+
+    // 5. Fetch available signoffs in current iteration
+    const signoffsResult = await this.pool.query<{
+      stageCode: string
+      stageExecutionId: string
+      executionNo: number
+      signerUserId: string
+      signerName: string
+      signerUsername: string
+      signerJobTitle: string
+      jobTitleWasOverridden: boolean
+      operationalUnitId: string
+      operationalUnitKind: string
+      managerAssignmentId: string | null
+      signatureAssetId: string
+      signatureSha256: string
+      signedAt: Date
+    }>(
+      `SELECT DISTINCT ON (se.stage_code)
+              se.stage_code AS "stageCode",
+              se.id AS "stageExecutionId",
+              se.execution_no AS "executionNo",
+              ws.signer_user_id AS "signerUserId",
+              ws.signer_snapshot->>'signerName' AS "signerName",
+              ws.signer_snapshot->>'signerUsername' AS "signerUsername",
+              ws.signer_snapshot->>'signerJobTitle' AS "signerJobTitle",
+              (ws.signer_snapshot->>'jobTitleWasOverridden')::boolean AS "jobTitleWasOverridden",
+              ws.signer_snapshot->>'operationalUnitId' AS "operationalUnitId",
+              ws.signer_snapshot->>'operationalUnitKind' AS "operationalUnitKind",
+              ws.manager_assignment_id AS "managerAssignmentId",
+              ws.signature_asset_id AS "signatureAssetId",
+              ws.signature_sha256 AS "signatureSha256",
+              ws.signed_at AS "signedAt"
+         FROM stage_execution se
+         JOIN workflow_signoff ws ON ws.stage_execution_id = se.id
+           WHERE pd.stage_execution_id = (
+             SELECT id FROM stage_execution WHERE iteration_id = $1 AND stage_code = 'P4'
+             ORDER BY execution_no DESC LIMIT 1
+           )
+          AND se.status = 'COMPLETED'
+        ORDER BY se.stage_code, se.execution_no DESC`,
+      [iteration.id]
+    )
+
+    const signoffs = signoffsResult.rows.map(s => ({
+      stageCode: s.stageCode,
+      stageExecutionId: s.stageExecutionId,
+      executionNo: Number(s.executionNo),
+      signerUserId: s.signerUserId,
+      signerName: s.signerName ?? '',
+      signerUsername: s.signerUsername ?? '',
+      signerJobTitle: s.signerJobTitle ?? '',
+      jobTitleWasOverridden: Boolean(s.jobTitleWasOverridden),
+      operationalUnitId: s.operationalUnitId ?? '',
+      operationalUnitKind: s.operationalUnitKind ?? '',
+      managerAssignmentId: s.managerAssignmentId,
+      signatureAssetId: s.signatureAssetId,
+      signatureSha256: s.signatureSha256,
+      signedAt: new Date(s.signedAt).toISOString()
+    }))
+
+    // 6. Promotion / Secondment Candidate Decisions
+    const candidates: FinalFormCandidate[] = []
+    if (request.requestType === 'PROMOTION') {
+      const decResult = await this.pool.query<{
+        candidateId: string
+        decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
+        targetJobTitle: string | null
+        recommendation: string | null
+        notes: string | null
+      }>(
+        `SELECT pd.candidate_id AS "candidateId",
+                pd.decision_type AS "decisionType",
+                pd.target_job_title AS "targetJobTitle",
+                pd.recommendation,
+                pd.notes
+           FROM promotion_decision pd
+           JOIN stage_execution se ON se.id = pd.stage_execution_id
+           WHERE pd.stage_execution_id = (
+             SELECT id FROM stage_execution WHERE iteration_id = $1 AND stage_code = 'P4'
+             ORDER BY execution_no DESC LIMIT 1
+           )
+          ORDER BY se.execution_no DESC`,
+        [iteration.id]
+      )
+      const decMap = new Map(decResult.rows.map(d => [d.candidateId, d]))
+
+      for (const c of candResult.rows) {
+        const empData = c.employeeData ?? {}
+        const dec = decMap.get(c.candidateId)
+        const isSame = dec?.decisionType === 'SAME_POSITION'
+        const currentJob = typeof empData.currentJobTitle === 'string' ? empData.currentJobTitle.trim() : ''
+
+        candidates.push({
+          candidateId: c.candidateId,
+          personnelNumber: c.personnelNumber,
+          employeeName: String(empData.employeeName ?? ''),
+          currentJobTitle: currentJob,
+          currentJobStartDate: typeof empData.currentJobStartDate === 'string' ? empData.currentJobStartDate : null,
+          sourceRoutingLabel: typeof empData.sourceRoutingLabel === 'string' && empData.sourceRoutingLabel.trim() ? empData.sourceRoutingLabel.trim() : null,
+          subgroup: typeof empData.subgroup === 'string' ? empData.subgroup : null,
+          department: typeof empData.department === 'string' ? empData.department : null,
+          seniorityDate: typeof empData.seniorityDate === 'string' ? empData.seniorityDate : null,
+          joiningDate: typeof empData.joiningDate === 'string' ? empData.joiningDate : null,
+          experienceStartDate: typeof empData.experienceStartDate === 'string' ? empData.experienceStartDate : null,
+          qualificationDate: typeof empData.originalQualificationDate === 'string' ? empData.originalQualificationDate : null,
+          qualificationName: typeof empData.originalQualificationCertificate === 'string' ? empData.originalQualificationCertificate : null,
+          qualificationInstitute: typeof empData.originalQualificationSource === 'string' ? empData.originalQualificationSource : null,
+          performanceRating: typeof empData.performanceRating === 'string' ? empData.performanceRating : null,
+          lastPromotionReport: typeof empData.lastPromotionReport === 'string' ? empData.lastPromotionReport : null,
+          experience: {
+            years: typeof empData.experienceYears === 'number' ? empData.experienceYears : null,
+            months: typeof empData.experienceMonths === 'number' ? empData.experienceMonths : null,
+            days: typeof empData.experienceDays === 'number' ? empData.experienceDays : null,
+            referenceDate: typeof empData.experienceReferenceDate === 'string' ? empData.experienceReferenceDate : null
+          },
+          ...(dec ? {
+            promotionDecision: {
+              decisionType: dec.decisionType,
+              targetJobTitle: isSame ? null : dec.targetJobTitle,
+              effectiveNominatedJob: isSame ? currentJob : dec.targetJobTitle,
+              recommendation: dec.recommendation,
+              notes: dec.notes
+            }
+          } : {})
+        })
+      }
+    } else {
+      const selResult = await this.pool.query<{
+        candidateId: string
+        selectedOptionId: string
+        positionTitle: string
+        organizationalDependency: string
+        qualificationStatus: string
+        qualificationStatusName: string | null
+      }>(
+        `SELECT sd.candidate_id AS "candidateId",
+                sd.selected_option_id AS "selectedOptionId",
+                spo.position_title AS "positionTitle",
+                spo.organizational_dependency AS "organizationalDependency",
+                spo.qualification_status AS "qualificationStatus",
+                qsr.name AS "qualificationStatusName"
+           FROM secondment_decision sd
+           JOIN stage_execution se ON se.id = sd.stage_execution_id
+           JOIN secondment_position_option spo ON spo.id = sd.selected_option_id
+           LEFT JOIN qualification_status_reference qsr ON qsr.code = spo.qualification_status
+          WHERE se.iteration_id = $1
+          ORDER BY se.execution_no DESC`,
+        [iteration.id]
+      )
+      const selMap = new Map(selResult.rows.map(s => [s.candidateId, s]))
+
+      for (const c of candResult.rows) {
+        const empData = c.employeeData ?? {}
+        const sel = selMap.get(c.candidateId)
+
+        candidates.push({
+          candidateId: c.candidateId,
+          personnelNumber: c.personnelNumber,
+          employeeName: String(empData.employeeName ?? ''),
+          currentJobTitle: String(empData.currentJobTitle ?? ''),
+          currentJobStartDate: typeof empData.currentJobStartDate === 'string' ? empData.currentJobStartDate : null,
+          sourceRoutingLabel: typeof empData.sourceRoutingLabel === 'string' && empData.sourceRoutingLabel.trim() ? empData.sourceRoutingLabel.trim() : null,
+          subgroup: typeof empData.subgroup === 'string' ? empData.subgroup : null,
+          department: typeof empData.department === 'string' ? empData.department : null,
+          seniorityDate: typeof empData.seniorityDate === 'string' ? empData.seniorityDate : null,
+          joiningDate: typeof empData.joiningDate === 'string' ? empData.joiningDate : null,
+          experienceStartDate: typeof empData.experienceStartDate === 'string' ? empData.experienceStartDate : null,
+          qualificationDate: typeof empData.originalQualificationDate === 'string' ? empData.originalQualificationDate : null,
+          qualificationName: typeof empData.originalQualificationCertificate === 'string' ? empData.originalQualificationCertificate : null,
+          qualificationInstitute: typeof empData.originalQualificationSource === 'string' ? empData.originalQualificationSource : null,
+          performanceRating: typeof empData.performanceRating === 'string' ? empData.performanceRating : null,
+          lastPromotionReport: typeof empData.lastPromotionReport === 'string' ? empData.lastPromotionReport : null,
+          experience: {
+            years: typeof empData.experienceYears === 'number' ? empData.experienceYears : null,
+            months: typeof empData.experienceMonths === 'number' ? empData.experienceMonths : null,
+            days: typeof empData.experienceDays === 'number' ? empData.experienceDays : null,
+            referenceDate: typeof empData.experienceReferenceDate === 'string' ? empData.experienceReferenceDate : null
+          },
+          ...(sel ? {
+            secondmentSelection: {
+              selectedOptionId: sel.selectedOptionId,
+              positionTitle: sel.positionTitle,
+              organizationalDependency: sel.organizationalDependency,
+              qualificationStatus: sel.qualificationStatus,
+              qualificationStatusName: sel.qualificationStatusName
+            }
+          } : {})
+        })
+      }
+    }
+
+    const payload: FinalFormSnapshotPayload = {
+      schemaVersion: 1,
+      kind: 'FINAL',
+      templateVersion: request.requestType === 'PROMOTION' ? PROMOTION_TEMPLATE_V3 : SECONDMENT_TEMPLATE_BASELINE,
+      requestId: request.id,
+      requestNumber: request.requestNumber,
+      requestType: request.requestType,
+      routingUnit,
+      iterationId: iteration.id,
+      iterationNo: Number(iteration.iteration_no),
+      cycleYear,
+      capturedAt: new Date().toISOString(),
+      candidates,
+      signoffs
+    }
+
+    const images = await this.loadVerifiedSignatureImages(signoffs)
+    const buffer = await this.limiter.run(() => renderOfficialFormPdf(payload, images, this.config.pdf.maxOutputBytes))
+
+    return {
+      buffer,
+      filename: `${request.requestNumber}-current.pdf`
+    }
   }
 
-  private async log(
-    actor: AuthContext,
-    documentType: 'FORM'|'AUDIT_LOG',
-    documentState: 'RECEIVED'|'DRAFT'|'FINAL',
+  async getFinalPdf(
+    requestIdValue: unknown,
+    actor: WorkflowRequestContext
+  ): Promise<{ buffer: Buffer, filename: string }> {
+    const requestId = uuid(requestIdValue, 'requestId')
+
+    // 1. Authorize read access
+    await requireRequestReadAccess(this.pool, actor.userId, requestId)
+    const requestResult = await this.pool.query<{ id: string, requestNumber: string, status: string }>(
+      `SELECT id, request_number AS "requestNumber", status FROM workflow_request WHERE id = $1`, [requestId]
+    )
+    const request = requestResult.rows[0]
+    if (!request) throw new AppError(404, 'Workflow request not found', 'REQUEST_NOT_FOUND')
+    if (request.status !== 'COMPLETED') {
+      throw new AppError(400, 'Final PDF is only available for COMPLETED requests', 'REQUEST_NOT_COMPLETED')
+    }
+
+    // 2. Fetch completed iteration & final snapshot
+    const snapResult = await this.pool.query<{
+      id: string
+      template_version: string
+      payload: FinalFormSnapshotPayload
+      sha256: string
+    }>(
+      `SELECT ffs.id, ffs.template_version, ffs.payload, ffs.sha256
+         FROM final_form_snapshot ffs
+         JOIN workflow_iteration wi ON wi.id = ffs.iteration_id
+        WHERE ffs.request_id = $1 AND wi.status = 'COMPLETED'
+        ORDER BY wi.iteration_no DESC
+        LIMIT 1`,
+      [requestId]
+    )
+
+    const snapshot = snapResult.rows[0]
+    if (!snapshot) {
+      throw new AppError(404, 'Final form snapshot not found for completed request', 'FINAL_SNAPSHOT_NOT_FOUND')
+    }
+    if (computeSnapshotSha256(snapshot.payload) !== snapshot.sha256) {
+      throw new AppError(500, 'Final form snapshot integrity mismatch', 'FINAL_SNAPSHOT_INTEGRITY_MISMATCH')
+    }
+
+    const buffer = await this.ensureFinalPdfMaterialized(requestId, snapshot.id)
+    return { buffer, filename: `${request.requestNumber}-final.pdf` }
+  }
+
+  async getAuditPdf(
+    requestIdValue: unknown,
+    actor: WorkflowRequestContext
+  ): Promise<{ buffer: Buffer, filename: string }> {
+    const requestId = uuid(requestIdValue, 'requestId')
+    await requireRequestReadAccess(this.pool, actor.userId, requestId)
+    const requestResult = await this.pool.query<{ requestNumber: string }>(
+      `SELECT request_number AS "requestNumber" FROM workflow_request WHERE id = $1`, [requestId]
+    )
+    const request = requestResult.rows[0]
+    if (!request) throw new AppError(404, 'Workflow request not found', 'REQUEST_NOT_FOUND')
+
+    // Fetch chronological history
+    const actionsResult = await this.pool.query<{
+      requestNumber: string
+      iterationNo: number
+      stageCode: string | null
+      actorName: string | null
+      actorUsername: string | null
+      actionType: string
+      reason: string | null
+      payload: Record<string, unknown>
+      createdAt: Date
+    }>(
+      `SELECT r.request_number AS "requestNumber",
+              wi.iteration_no AS "iterationNo",
+              se.stage_code AS "stageCode",
+              ua.display_name AS "actorName",
+              ua.username AS "actorUsername",
+              sa.action_type AS "actionType",
+              sa.reason,
+              sa.payload,
+              sa.created_at AS "createdAt"
+         FROM stage_action sa
+         JOIN stage_execution se ON se.id = sa.stage_execution_id
+         JOIN workflow_iteration wi ON wi.id = se.iteration_id
+         JOIN workflow_request r ON r.id = wi.request_id
+         LEFT JOIN user_account ua ON ua.id = sa.actor_user_id
+        WHERE r.id = $1
+        ORDER BY sa.created_at ASC`,
+      [requestId]
+    )
+
+    const entries: AuditPdfEntry[] = actionsResult.rows.map(row => ({
+      requestNumber: row.requestNumber,
+      iterationNo: Number(row.iterationNo),
+      stageCode: row.stageCode,
+      actorName: row.actorName,
+      actorUsername: row.actorUsername,
+      actionType: row.actionType,
+      reason: row.reason,
+      details: row.payload ?? {},
+      createdAt: new Date(row.createdAt).toISOString()
+    }))
+
+    // Evidence references are deliberately summarized, not dumped: the report
+    // remains readable and never discloses signature storage keys or secrets.
+    const [iterations, executions, assignments, snapshots, signoffs, audits, notes] = await Promise.all([
+      this.pool.query(`SELECT iteration_no AS "iterationNo", status, started_at AS "startedAt", ended_at AS "endedAt" FROM workflow_iteration WHERE request_id=$1`, [requestId]),
+      this.pool.query(`SELECT wi.iteration_no AS "iterationNo", se.stage_code AS "stageCode", se.execution_no AS "executionNo", se.status, se.opened_at AS "openedAt", se.completed_at AS "completedAt" FROM stage_execution se JOIN workflow_iteration wi ON wi.id=se.iteration_id WHERE wi.request_id=$1`, [requestId]),
+      this.pool.query(`SELECT wi.iteration_no AS "iterationNo", se.stage_code AS "stageCode", wa.assigned_at AS "occurredAt", wa.end_reason AS "reason" FROM work_assignment wa JOIN stage_execution se ON se.id=wa.stage_execution_id JOIN workflow_iteration wi ON wi.id=se.iteration_id WHERE wi.request_id=$1`, [requestId]),
+      this.pool.query(`SELECT wi.iteration_no AS "iterationNo", se.stage_code AS "stageCode", ss.sha256, ss.created_at AS "occurredAt" FROM stage_submission_snapshot ss JOIN stage_execution se ON se.id=ss.stage_execution_id JOIN workflow_iteration wi ON wi.id=se.iteration_id WHERE wi.request_id=$1`, [requestId]),
+      this.pool.query(`SELECT wi.iteration_no AS "iterationNo", se.stage_code AS "stageCode", ws.signer_snapshot->>'signerName' AS "actorName", ws.signature_sha256 AS "sha256", ws.signed_at AS "occurredAt" FROM workflow_signoff ws JOIN stage_execution se ON se.id=ws.stage_execution_id JOIN workflow_iteration wi ON wi.id=se.iteration_id WHERE wi.request_id=$1`, [requestId]),
+      this.pool.query(`SELECT event_type AS "actionType", details, created_at AS "occurredAt" FROM audit_event WHERE subject_id IN (SELECT se.id FROM stage_execution se JOIN workflow_iteration wi ON wi.id=se.iteration_id WHERE wi.request_id=$1)`, [requestId]),
+      this.pool.query(`SELECT wi.iteration_no AS "iterationNo", se.stage_code AS "stageCode", n.body AS reason, n.created_at AS "occurredAt" FROM workflow_note n LEFT JOIN workflow_iteration wi ON wi.id=n.iteration_id LEFT JOIN stage_execution se ON se.id=n.stage_execution_id WHERE n.request_id=$1`, [requestId])
+    ])
+    for (const row of iterations.rows) entries.push({ requestNumber: request.requestNumber, iterationNo: Number(row.iterationNo), stageCode: null, actorName: null, actorUsername: null, actionType: `ITERATION_${row.status}`, reason: null, details: {}, createdAt: new Date(row.endedAt ?? row.startedAt).toISOString() })
+    for (const row of executions.rows) entries.push({ requestNumber: request.requestNumber, iterationNo: Number(row.iterationNo), stageCode: row.stageCode, actorName: null, actorUsername: null, actionType: `STAGE_${row.status}`, reason: null, details: { executionNo: row.executionNo }, createdAt: new Date(row.completedAt ?? row.openedAt).toISOString() })
+    for (const row of assignments.rows) entries.push({ requestNumber: request.requestNumber, iterationNo: Number(row.iterationNo), stageCode: row.stageCode, actorName: null, actorUsername: null, actionType: 'WORK_ASSIGNMENT', reason: row.reason, details: {}, createdAt: new Date(row.occurredAt).toISOString() })
+    for (const row of snapshots.rows) entries.push({ requestNumber: request.requestNumber, iterationNo: Number(row.iterationNo), stageCode: row.stageCode, actorName: null, actorUsername: null, actionType: 'STAGE_SNAPSHOT', reason: null, details: { sha256: row.sha256 }, createdAt: new Date(row.occurredAt).toISOString() })
+    for (const row of signoffs.rows) entries.push({ requestNumber: request.requestNumber, iterationNo: Number(row.iterationNo), stageCode: row.stageCode, actorName: row.actorName, actorUsername: null, actionType: 'WORKFLOW_SIGNOFF', reason: null, details: { signatureSha256: row.sha256 }, createdAt: new Date(row.occurredAt).toISOString() })
+    for (const row of audits.rows) entries.push({ requestNumber: request.requestNumber, iterationNo: 0, stageCode: null, actorName: null, actorUsername: null, actionType: row.actionType, reason: null, details: row.details ?? {}, createdAt: new Date(row.occurredAt).toISOString() })
+    for (const row of notes.rows) entries.push({ requestNumber: request.requestNumber, iterationNo: Number(row.iterationNo ?? 0), stageCode: row.stageCode, actorName: null, actorUsername: null, actionType: 'WORKFLOW_NOTE', reason: row.reason, details: {}, createdAt: new Date(row.occurredAt).toISOString() })
+    entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.actionType.localeCompare(b.actionType))
+
+    const buffer = await this.limiter.run(() => renderAuditTrailPdf(entries, request.requestNumber, this.config.pdf.maxOutputBytes))
+
+    return {
+      buffer,
+      filename: `${request.requestNumber}-audit.pdf`
+    }
+  }
+
+  async materializeFinalPdfPostCommit(
     requestId: string,
-    receivedSnapshotId: string | null,
-    routingUnitId: string | null,
-    templateVersion: string,
-    content: Buffer
+    finalSnapshotId: string
   ): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO egas_pdfgenerationlog
-        (id,generatedby_id,documenttype,documentstate,request_id,stagereceivedsnapshot_id,
-         routingunit_id,templateversion,filesha256,generatedat)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP)`,
-      [randomUUID(), actor.userId, documentType, documentState, requestId, receivedSnapshotId,
-        routingUnitId, templateVersion, sha256(content)]
-    )
+    try {
+      await this.ensureFinalPdfMaterialized(requestId, finalSnapshotId)
+    } catch { /* post-commit best effort; shared helper records safe failure */ }
   }
 
-  private controlledPath(storageKey: string): string {
-    if (basename(storageKey) !== storageKey || !/^[0-9a-f]{8}-[0-9a-f-]{27}\.pdf$/i.test(storageKey)) {
-      throw new AppError(500, 'Stored PDF identity is invalid', 'PDF_STORAGE_INVALID')
+  private async ensureFinalPdfMaterialized(requestId: string, finalSnapshotId: string): Promise<Buffer> {
+    const result = await this.pool.query<{ payload: FinalFormSnapshotPayload, sha256: string }>(`SELECT payload,sha256 FROM final_form_snapshot WHERE id=$1 AND request_id=$2`, [finalSnapshotId, requestId])
+    const snapshot = result.rows[0]
+    if (!snapshot) throw new AppError(404, 'Final form snapshot not found', 'FINAL_SNAPSHOT_NOT_FOUND')
+    if (computeSnapshotSha256(snapshot.payload) !== snapshot.sha256) throw new AppError(500, 'Final form snapshot integrity mismatch', 'FINAL_SNAPSHOT_INTEGRITY_MISMATCH')
+    const existing = await this.pool.query<{ storage_key: string, sha256: string, byte_size: number }>(`SELECT storage_key,sha256,byte_size FROM frozen_pdf_document WHERE final_form_snapshot_id=$1`, [finalSnapshotId])
+    if (existing.rows[0]) return await this.readFrozenPdf(existing.rows[0])
+    let path: string | null = null
+    try {
+      const images = await this.loadVerifiedSignatureImages(snapshot.payload.signoffs)
+      const bytes = await this.limiter.run(() => renderOfficialFormPdf(snapshot.payload, images, this.config.pdf.maxOutputBytes))
+      const key = `${randomUUID()}.pdf`; path = this.resolvePdfPath(key)
+      await mkdir(this.config.pdf.storageDirectory, { recursive: true, mode: 0o700 }); await writeFile(path, bytes, { flag: 'wx', mode: 0o600 })
+      const winner = await withTransaction(this.pool, async db => {
+        await db.query(`INSERT INTO frozen_pdf_document (id,final_form_snapshot_id,storage_key,sha256,byte_size,created_at) VALUES ($1,$2,$3,$4,$5,CURRENT_TIMESTAMP) ON CONFLICT (final_form_snapshot_id) DO NOTHING`, [randomUUID(), finalSnapshotId, key, createHash('sha256').update(bytes).digest('hex'), bytes.length])
+        const authoritative = await db.query<{ storage_key: string, sha256: string, byte_size: number }>(
+          'SELECT storage_key,sha256,byte_size FROM frozen_pdf_document WHERE final_form_snapshot_id=$1',
+          [finalSnapshotId]
+        )
+        const row = authoritative.rows[0]
+        if (!row) throw new AppError(500, 'Frozen PDF registration failed', 'FROZEN_PDF_REGISTRATION_FAILED')
+        await db.query(`INSERT INTO pdf_generation_log (id,request_id,document_kind,succeeded,safe_metadata,created_at) VALUES ($1,$2,'FINAL_OFFICIAL',true,$3,CURRENT_TIMESTAMP)`, [randomUUID(), requestId, JSON.stringify({ snapshotId: finalSnapshotId, byteSize: row.byte_size })])
+        return row
+      })
+      if (winner.storage_key !== key) await unlink(path).catch(() => undefined)
+      path = null
+      return await this.readFrozenPdf(winner)
+    } catch (error) {
+      if (path) await unlink(path).catch(() => undefined)
+      await this.pool.query(`INSERT INTO pdf_generation_log (id,request_id,document_kind,succeeded,safe_metadata,created_at) VALUES ($1,$2,'FINAL_OFFICIAL',false,$3,CURRENT_TIMESTAMP)`, [randomUUID(), requestId, JSON.stringify({ failure: 'FINAL_PDF_MATERIALIZATION_FAILED' })]).catch(() => undefined)
+      throw error
     }
-    const target = resolve(join(this.storageRoot, storageKey))
-    if (!target.startsWith(`${this.storageRoot}${sep}`)) throw new AppError(500, 'Stored PDF identity is invalid', 'PDF_STORAGE_INVALID')
-    return target
   }
 
-  private reportDate(value: unknown, field: string): string | null {
-    if (value === undefined || value === null || value === '') return null
-    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new AppError(400, `${field} must be YYYY-MM-DD`)
-    const date = new Date(`${value}T00:00:00.000Z`)
-    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) throw new AppError(400, `${field} is invalid`)
-    return value
+  private async readFrozenPdf(row: { storage_key: string, sha256: string, byte_size: number }): Promise<Buffer> {
+    let bytes: Buffer
+    try { bytes = await readFile(this.resolvePdfPath(row.storage_key)) } catch { throw new AppError(500, 'Frozen PDF file missing from storage', 'FROZEN_PDF_FILE_MISSING') }
+    if (bytes.length !== Number(row.byte_size)) throw new AppError(500, 'Frozen PDF document size mismatch', 'FROZEN_PDF_INTEGRITY_MISMATCH')
+    if (createHash('sha256').update(bytes).digest('hex') !== row.sha256) throw new AppError(500, 'Frozen PDF document integrity mismatch', 'FROZEN_PDF_INTEGRITY_MISMATCH')
+    return bytes
   }
 }

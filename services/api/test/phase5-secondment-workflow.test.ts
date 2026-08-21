@@ -757,6 +757,23 @@ describe('Phase 5 Secondment Workflow Domain Logic and API', () => {
 
   it('17. S2 readiness requires >=1 valid option per candidate', async () => {
     const { requestId, iterationId, s2StageExecutionId, candidate1Id, candidate2Id } = await setupRequestAtS2()
+    await pool!.query(
+      `INSERT INTO job_category_reference (id, code, name, is_active)
+       VALUES ($1, 'PHASE5_TEST_CATEGORY', 'فئة اختبار مرحلة S2', TRUE)`,
+      [randomUUID()]
+    )
+    await secondment.upsertS2CandidatePreparation(
+      s2StageExecutionId,
+      candidate1Id,
+      { lastPromotionReport: 'تقرير آخر ترقية للمرشح الأول', jobCategoryCode: 'PHASE5_TEST_CATEGORY' },
+      orgManager
+    )
+    await secondment.upsertS2CandidatePreparation(
+      s2StageExecutionId,
+      candidate2Id,
+      { lastPromotionReport: 'تقرير آخر ترقية للمرشح الثاني', jobCategoryCode: 'PHASE5_TEST_CATEGORY' },
+      orgManager
+    )
 
     // Add option only for candidate 1
     await secondment.addPositionOption(
