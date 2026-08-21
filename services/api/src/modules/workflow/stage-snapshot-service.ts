@@ -26,6 +26,17 @@ export interface StageSnapshotData {
     frozenData: Record<string, unknown>
     acceptedData: Record<string, unknown>
   }>
+  promotionDecisions?: Array<{
+    candidateId: string
+    personnelNumber: string
+    employeeName: string
+    sourceP4StageExecutionId: string
+    decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
+    targetJobTitle: string | null
+    effectiveNominatedJob: string | null
+    recommendation: string | null
+    notes: string | null
+  }>
   submittedAt: string
   submittedByUserId: string
 }
