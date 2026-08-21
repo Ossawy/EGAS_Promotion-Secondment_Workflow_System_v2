@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: egas_ci
+          POSTGRES_PASSWORD: egas_ci_password
+          POSTGRES_DB: egas_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U egas_ci -d egas_ci"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      EGAS_DB_HOST: 127.0.0.1
+      EGAS_DB_PORT: 5432
+      EGAS_DB_NAME: egas_ci
+      EGAS_DB_USER: egas_ci
+      EGAS_DB_PASSWORD: egas_ci_password
+      EGAS_DB_SSL: "false"
+      EGAS_AUTH_FINGERPRINT_SECRET: ci-only-fingerprint-secret-not-production-123456789
+      EGAS_REQUIRE_SECURE_COOKIE: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Scan repository for secrets
+        run: npm --workspace @egas/api run security:secrets
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Apply migrations on real PostgreSQL
+        run: node services/api/dist/db/migrate-cli.js
+
+      - name: Verify migration idempotency
+        run: node services/api/dist/db/migrate-cli.js
+
+      - name: Check changed files for whitespace errors
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --check "origin/${{ github.base_ref }}...HEAD"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "${{ github.event.before }}" "${{ github.sha }}"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^ HEAD
+          fi
