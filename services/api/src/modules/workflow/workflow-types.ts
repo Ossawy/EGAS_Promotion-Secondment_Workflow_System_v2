@@ -96,6 +96,60 @@ export interface PromotionP4ValidationResult {
   hasOtherPosition: boolean
 }
 
+export interface SecondmentPositionOptionInput {
+  positionTitle: string
+  organizationalDependency: string
+  qualificationStatus: string
+}
+
+export interface SecondmentPositionOptionSummary {
+  id: string
+  sourceStageExecutionId: string
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  positionTitle: string
+  organizationalDependency: string
+  qualificationStatusCode: string
+  qualificationStatusName: string | null
+  displayOrder: number
+}
+
+export interface SecondmentSelectionInput {
+  selectedOptionId: string
+}
+
+export interface SecondmentSelectionSummary {
+  id: string
+  stageExecutionId: string
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  selectedOptionId: string
+  positionTitle: string
+  organizationalDependency: string
+  qualificationStatusCode: string
+  qualificationStatusName: string | null
+  sourceS2StageExecutionId: string
+}
+
+export interface SecondmentS2CandidateOptionGroup {
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  options: SecondmentPositionOptionSummary[]
+}
+
+export interface SecondmentS2ValidationResult {
+  stageCode: 'S2'
+  candidateOptions: SecondmentS2CandidateOptionGroup[]
+}
+
+export interface SecondmentS3ValidationResult {
+  nextStageCode: 'S4'
+  selections: SecondmentSelectionSummary[]
+}
+
 export interface WorkflowRequestSummary {
   id: string
   requestNumber: string

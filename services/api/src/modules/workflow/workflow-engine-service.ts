@@ -978,6 +978,19 @@ export class WorkflowEngineService {
         notes: string | null
       }> | undefined
 
+      let secondmentSelectionsPayload: Array<{
+        candidateId: string
+        personnelNumber: string
+        employeeName: string
+        sourceS3StageExecutionId: string
+        selectedOptionId: string
+        sourceS2StageExecutionId: string
+        positionTitle: string
+        organizationalDependency: string
+        qualificationStatusCode: string
+        qualificationStatusName: string | null
+      }> | undefined
+
       if (stageExecution.stageCode === 'P4O') {
         const p4ExecResult = await db.query<{ id: string }>(
           `SELECT id FROM stage_execution
@@ -1039,6 +1052,90 @@ export class WorkflowEngineService {
             notes: d.notes
           }
         })
+      } else if (stageExecution.stageCode === 'S4') {
+        const s3ExecResult = await db.query<{ id: string }>(
+          `SELECT id FROM stage_execution
+            WHERE iteration_id = $1 AND stage_code = 'S3' AND status = 'COMPLETED'
+            ORDER BY execution_no DESC
+            LIMIT 1`,
+          [iteration.id]
+        )
+        const s3Exec = s3ExecResult.rows[0]
+        if (!s3Exec) {
+          throw new AppError(409, 'Authoritative completed S3 execution not found in current iteration', 'AUTHORITATIVE_S3_NOT_FOUND')
+        }
+
+        const s2ExecResult = await db.query<{ id: string }>(
+          `SELECT id FROM stage_execution
+            WHERE iteration_id = $1 AND stage_code = 'S2' AND status = 'COMPLETED'
+            ORDER BY execution_no DESC
+            LIMIT 1`,
+          [iteration.id]
+        )
+        const s2Exec = s2ExecResult.rows[0]
+        if (!s2Exec) {
+          throw new AppError(409, 'Authoritative completed S2 execution not found in current iteration', 'AUTHORITATIVE_S2_NOT_FOUND')
+        }
+
+        const selectionsResult = await db.query<{
+          id: string
+          stageExecutionId: string
+          candidateId: string
+          personnelNumber: string
+          employeeData: Record<string, unknown>
+          selectedOptionId: string
+          positionTitle: string
+          organizationalDependency: string
+          qualificationStatus: string
+          qualificationStatusName: string | null
+          sourceS2StageExecutionId: string
+          optionCandidateId: string
+        }>(
+          `SELECT d.id, d.stage_execution_id AS "stageExecutionId", d.candidate_id AS "candidateId",
+                  s.personnel_number AS "personnelNumber", s.employee_data AS "employeeData",
+                  d.selected_option_id AS "selectedOptionId", o.position_title AS "positionTitle",
+                  o.organizational_dependency AS "organizationalDependency",
+                  o.qualification_status AS "qualificationStatus", r.name AS "qualificationStatusName",
+                  o.source_stage_execution_id AS "sourceS2StageExecutionId",
+                  o.candidate_id AS "optionCandidateId"
+             FROM secondment_decision d
+             JOIN request_candidate c ON c.id = d.candidate_id
+             JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
+             JOIN secondment_position_option o ON o.id = d.selected_option_id
+             LEFT JOIN qualification_status_reference r ON r.code = o.qualification_status
+            WHERE d.stage_execution_id = $1 AND c.request_id = $2
+            ORDER BY s.personnel_number`,
+          [s3Exec.id, request.id]
+        )
+
+        if (selectionsResult.rows.length === 0 || selectionsResult.rows.length !== candidatesResult.rows.length) {
+          throw new AppError(409, 'Authoritative S3 selections are incomplete for this request', 'SECONDMENT_SELECTIONS_INCOMPLETE')
+        }
+
+        for (const row of selectionsResult.rows) {
+          if (row.optionCandidateId !== row.candidateId) {
+            throw new AppError(409, `Selection for candidate ${row.personnelNumber} belongs to a different candidate`, 'INVALID_OPTION_SELECTION')
+          }
+          if (row.sourceS2StageExecutionId !== s2Exec.id) {
+            throw new AppError(409, `Selection for candidate ${row.personnelNumber} does not originate from authoritative S2 execution`, 'STALE_OPTION_SELECTION')
+          }
+        }
+
+        secondmentSelectionsPayload = selectionsResult.rows.map(row => {
+          const empData = (row.employeeData as Record<string, unknown>) ?? {}
+          return {
+            candidateId: row.candidateId,
+            personnelNumber: row.personnelNumber,
+            employeeName: String(empData.employeeName ?? ''),
+            sourceS3StageExecutionId: row.stageExecutionId,
+            selectedOptionId: row.selectedOptionId,
+            sourceS2StageExecutionId: row.sourceS2StageExecutionId,
+            positionTitle: row.positionTitle,
+            organizationalDependency: row.organizationalDependency,
+            qualificationStatusCode: row.qualificationStatus,
+            qualificationStatusName: row.qualificationStatusName ?? null
+          }
+        })
       }
 
       // Freeze stage submission snapshot
@@ -1056,6 +1153,7 @@ export class WorkflowEngineService {
         formSections: formSectionsResult.rows,
         candidates: candidatesResult.rows,
         ...(promotionDecisionsPayload !== undefined ? { promotionDecisions: promotionDecisionsPayload } : {}),
+        ...(secondmentSelectionsPayload !== undefined ? { secondmentSelections: secondmentSelectionsPayload } : {}),
         submittedAt: new Date().toISOString(),
         submittedByUserId: actor.userId
       })

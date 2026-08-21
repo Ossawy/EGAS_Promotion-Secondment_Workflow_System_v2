@@ -6,6 +6,7 @@ import { csrfProtection } from '../../middleware/csrf.ts'
 import { exactObject, optionalText, text, uuid } from '../../shared/validation.ts'
 import { WorkflowEngineService } from './workflow-engine-service.ts'
 import { PromotionWorkflowService } from './promotion-workflow-service.ts'
+import { SecondmentWorkflowService } from './secondment-workflow-service.ts'
 import type {
   AddNoteInput,
   AssignStageInput,
@@ -24,6 +25,7 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
   const router = Router()
   const engine = new WorkflowEngineService(pool)
   const promotion = new PromotionWorkflowService(pool)
+  const secondment = new SecondmentWorkflowService(pool)
   const csrf = csrfProtection(pool, config)
 
   router.use(requireOperational)
@@ -246,7 +248,86 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     } catch (error) { next(error) }
   })
 
-  // 7. Notifications
+  // 7. Secondment Position Options & Selections
+  router.get('/requests/:requestId/secondment/options', async (req, res, next) => {
+    try {
+      const requestId = uuid(req.params.requestId, 'requestId')
+      const result = await secondment.getAuthoritativePositionOptions(requestId, context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  router.post('/stages/:stageExecutionId/secondment/candidates/:candidateId/options', csrf, async (req, res, next) => {
+    try {
+      const stageExecutionId = uuid(req.params.stageExecutionId, 'stageExecutionId')
+      const candidateId = uuid(req.params.candidateId, 'candidateId')
+      const body = exactObject(req.body, ['positionTitle', 'organizationalDependency', 'qualificationStatus'])
+      const positionTitle = text(body.positionTitle, 'positionTitle', 240, 1)
+      const organizationalDependency = text(body.organizationalDependency, 'organizationalDependency', 240, 1)
+      const qualificationStatus = text(body.qualificationStatus, 'qualificationStatus', 80, 1)
+      const result = await secondment.addPositionOption(
+        stageExecutionId,
+        candidateId,
+        { positionTitle, organizationalDependency, qualificationStatus },
+        context(res)
+      )
+      res.status(201).json(result)
+    } catch (error) { next(error) }
+  })
+
+  router.put('/stages/:stageExecutionId/secondment/options/:optionId', csrf, async (req, res, next) => {
+    try {
+      const stageExecutionId = uuid(req.params.stageExecutionId, 'stageExecutionId')
+      const optionId = uuid(req.params.optionId, 'optionId')
+      const body = exactObject(req.body, ['positionTitle', 'organizationalDependency', 'qualificationStatus'])
+      const positionTitle = text(body.positionTitle, 'positionTitle', 240, 1)
+      const organizationalDependency = text(body.organizationalDependency, 'organizationalDependency', 240, 1)
+      const qualificationStatus = text(body.qualificationStatus, 'qualificationStatus', 80, 1)
+      const result = await secondment.updatePositionOption(
+        stageExecutionId,
+        optionId,
+        { positionTitle, organizationalDependency, qualificationStatus },
+        context(res)
+      )
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  router.delete('/stages/:stageExecutionId/secondment/options/:optionId', csrf, async (req, res, next) => {
+    try {
+      exactObject(req.body ?? {}, [])
+      const stageExecutionId = uuid(req.params.stageExecutionId, 'stageExecutionId')
+      const optionId = uuid(req.params.optionId, 'optionId')
+      const result = await secondment.removePositionOption(stageExecutionId, optionId, context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  router.get('/requests/:requestId/secondment/selections', async (req, res, next) => {
+    try {
+      const requestId = uuid(req.params.requestId, 'requestId')
+      const result = await secondment.getAuthoritativeSelections(requestId, context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  router.put('/stages/:stageExecutionId/secondment/candidates/:candidateId/selection', csrf, async (req, res, next) => {
+    try {
+      const stageExecutionId = uuid(req.params.stageExecutionId, 'stageExecutionId')
+      const candidateId = uuid(req.params.candidateId, 'candidateId')
+      const body = exactObject(req.body, ['selectedOptionId'])
+      const selectedOptionId = uuid(body.selectedOptionId, 'selectedOptionId')
+      const result = await secondment.upsertSelection(
+        stageExecutionId,
+        candidateId,
+        { selectedOptionId },
+        context(res)
+      )
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  // 8. Notifications
   router.get('/notifications', async (req, res, next) => {
     try {
       const skip = typeof req.query.skip === 'string' && /^\d+$/.test(req.query.skip) ? Number(req.query.skip) : 0
