@@ -5,6 +5,7 @@ import { authContext, requireOperational } from '../../middleware/authorize.ts'
 import { csrfProtection } from '../../middleware/csrf.ts'
 import { exactObject, optionalText, text, uuid } from '../../shared/validation.ts'
 import { WorkflowEngineService } from './workflow-engine-service.ts'
+import { PromotionWorkflowService } from './promotion-workflow-service.ts'
 import type {
   AddNoteInput,
   AssignStageInput,
@@ -22,6 +23,7 @@ function context(res: express.Response): WorkflowRequestContext {
 export function workflowRouter(pool: Pool, config: AppConfig): Router {
   const router = Router()
   const engine = new WorkflowEngineService(pool)
+  const promotion = new PromotionWorkflowService(pool)
   const csrf = csrfProtection(pool, config)
 
   router.use(requireOperational)
@@ -216,7 +218,35 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     } catch (error) { next(error) }
   })
 
-  // 6. Notifications
+  // 6. Promotion Decisions
+  router.get('/requests/:requestId/promotion/decisions', async (req, res, next) => {
+    try {
+      const requestId = uuid(req.params.requestId, 'requestId')
+      const result = await promotion.getAuthoritativeDecisions(requestId, context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  router.put('/stages/:stageExecutionId/promotion/candidates/:candidateId/decision', csrf, async (req, res, next) => {
+    try {
+      const stageExecutionId = uuid(req.params.stageExecutionId, 'stageExecutionId')
+      const candidateId = uuid(req.params.candidateId, 'candidateId')
+      const body = exactObject(req.body, ['decisionType', 'targetJobTitle', 'recommendation', 'notes'])
+      const decisionType = text(body.decisionType, 'decisionType', 20) as 'SAME_POSITION' | 'OTHER_POSITION'
+      const targetJobTitle = optionalText(body.targetJobTitle, 'targetJobTitle', 240)
+      const recommendation = text(body.recommendation, 'recommendation', 80, 1)
+      const notes = optionalText(body.notes, 'notes', 4000)
+      const result = await promotion.upsertDecision(
+        stageExecutionId,
+        candidateId,
+        { decisionType, targetJobTitle, recommendation, notes },
+        context(res)
+      )
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  // 7. Notifications
   router.get('/notifications', async (req, res, next) => {
     try {
       const skip = typeof req.query.skip === 'string' && /^\d+$/.test(req.query.skip) ? Number(req.query.skip) : 0

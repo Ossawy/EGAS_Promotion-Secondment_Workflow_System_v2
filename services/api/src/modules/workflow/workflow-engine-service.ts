@@ -97,7 +97,7 @@ async function insertNotification(
   )
 }
 
-async function insertStageAction(
+export async function insertStageAction(
   db: Queryable,
   stageExecutionId: string,
   actorUserId: string,
@@ -912,12 +912,24 @@ export class WorkflowEngineService {
 
       await requireCurrentUnitManager(db, actor.userId, stageExecution.responsibleUnitId)
 
-      // Determine next deterministic generic stage
+      // Determine next deterministic generic stage with request-type validation
       let nextStageCode: StageCode
-      if (stageExecution.stageCode === 'P3') nextStageCode = 'P4'
-      else if (stageExecution.stageCode === 'P4O') nextStageCode = 'P5'
-      else if (stageExecution.stageCode === 'S4') nextStageCode = 'S5'
-      else {
+      if (stageExecution.stageCode === 'P3') {
+        if (request.requestType !== 'PROMOTION') {
+          throw new AppError(400, 'Stage P3 is only valid for PROMOTION requests', 'INVALID_REQUEST_TYPE')
+        }
+        nextStageCode = 'P4'
+      } else if (stageExecution.stageCode === 'P4O') {
+        if (request.requestType !== 'PROMOTION') {
+          throw new AppError(400, 'Stage P4O is only valid for PROMOTION requests', 'INVALID_REQUEST_TYPE')
+        }
+        nextStageCode = 'P5'
+      } else if (stageExecution.stageCode === 'S4') {
+        if (request.requestType !== 'SECONDMENT') {
+          throw new AppError(400, 'Stage S4 is only valid for SECONDMENT requests', 'INVALID_REQUEST_TYPE')
+        }
+        nextStageCode = 'S5'
+      } else {
         throw new AppError(400, `Generic advance not supported from stage ${stageExecution.stageCode}`, 'STAGE_ADVANCE_UNSUPPORTED')
       }
 
@@ -953,6 +965,82 @@ export class WorkflowEngineService {
         [request.id]
       )
 
+      // If P4O, validate authoritative P4 decisions and build promotionDecisions snapshot payload
+      let promotionDecisionsPayload: Array<{
+        candidateId: string
+        personnelNumber: string
+        employeeName: string
+        sourceP4StageExecutionId: string
+        decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
+        targetJobTitle: string | null
+        effectiveNominatedJob: string | null
+        recommendation: string | null
+        notes: string | null
+      }> | undefined
+
+      if (stageExecution.stageCode === 'P4O') {
+        const p4ExecResult = await db.query<{ id: string }>(
+          `SELECT id FROM stage_execution
+            WHERE iteration_id = $1 AND stage_code = 'P4' AND status = 'COMPLETED'
+            ORDER BY execution_no DESC
+            LIMIT 1`,
+          [iteration.id]
+        )
+        const p4Exec = p4ExecResult.rows[0]
+        if (!p4Exec) {
+          throw new AppError(409, 'Authoritative completed P4 execution not found in current iteration', 'AUTHORITATIVE_P4_NOT_FOUND')
+        }
+
+        const decisionsResult = await db.query<{
+          id: string
+          stageExecutionId: string
+          candidateId: string
+          personnelNumber: string
+          employeeData: Record<string, unknown>
+          decisionType: string
+          targetJobTitle: string | null
+          recommendation: string | null
+          notes: string | null
+        }>(
+          `SELECT d.id, d.stage_execution_id AS "stageExecutionId", d.candidate_id AS "candidateId",
+                  s.personnel_number AS "personnelNumber", s.employee_data AS "employeeData",
+                  d.decision_type AS "decisionType", d.target_job_title AS "targetJobTitle",
+                  d.recommendation, d.notes
+             FROM promotion_decision d
+             JOIN request_candidate c ON c.id = d.candidate_id
+             JOIN employee_annual_snapshot s ON s.id = c.employee_snapshot_id
+            WHERE d.stage_execution_id = $1 AND c.request_id = $2
+            ORDER BY s.personnel_number`,
+          [p4Exec.id, request.id]
+        )
+
+        if (decisionsResult.rows.length === 0 || decisionsResult.rows.length !== candidatesResult.rows.length) {
+          throw new AppError(409, 'Authoritative P4 decisions are incomplete for this request', 'PROMOTION_DECISIONS_INCOMPLETE')
+        }
+
+        const hasOther = decisionsResult.rows.some(d => d.decisionType === 'OTHER_POSITION')
+        if (!hasOther) {
+          throw new AppError(409, 'P4O confirmation requires at least one OTHER_POSITION decision', 'P4O_CONFIRMATION_INVALID')
+        }
+
+        promotionDecisionsPayload = decisionsResult.rows.map(d => {
+          const empData = (d.employeeData as Record<string, unknown>) ?? {}
+          const currentJob = typeof empData.currentJobTitle === 'string' ? empData.currentJobTitle.trim() : null
+          const isSame = d.decisionType === 'SAME_POSITION'
+          return {
+            candidateId: d.candidateId,
+            personnelNumber: d.personnelNumber,
+            employeeName: String(empData.employeeName ?? ''),
+            sourceP4StageExecutionId: d.stageExecutionId,
+            decisionType: d.decisionType as 'SAME_POSITION' | 'OTHER_POSITION',
+            targetJobTitle: isSame ? null : d.targetJobTitle,
+            effectiveNominatedJob: isSame ? currentJob : d.targetJobTitle,
+            recommendation: d.recommendation,
+            notes: d.notes
+          }
+        })
+      }
+
       // Freeze stage submission snapshot
       await createStageSubmissionSnapshot(db, stageExecutionId, {
         requestId: request.id,
@@ -967,6 +1055,7 @@ export class WorkflowEngineService {
         responsibleUnitId: stageExecution.responsibleUnitId,
         formSections: formSectionsResult.rows,
         candidates: candidatesResult.rows,
+        ...(promotionDecisionsPayload !== undefined ? { promotionDecisions: promotionDecisionsPayload } : {}),
         submittedAt: new Date().toISOString(),
         submittedByUserId: actor.userId
       })

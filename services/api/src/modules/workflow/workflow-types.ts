@@ -68,6 +68,34 @@ export interface AddNoteInput {
   candidateId?: string
 }
 
+export type PromotionDecisionType = 'SAME_POSITION' | 'OTHER_POSITION'
+
+export interface UpsertPromotionDecisionInput {
+  decisionType: PromotionDecisionType
+  targetJobTitle?: string | null
+  recommendation: string
+  notes?: string | null
+}
+
+export interface PromotionDecisionSummary {
+  id: string
+  stageExecutionId: string
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  decisionType: PromotionDecisionType
+  targetJobTitle: string | null
+  effectiveNominatedJob: string | null
+  recommendation: string
+  notes: string | null
+}
+
+export interface PromotionP4ValidationResult {
+  nextStageCode: 'P5' | 'P4O'
+  decisions: PromotionDecisionSummary[]
+  hasOtherPosition: boolean
+}
+
 export interface WorkflowRequestSummary {
   id: string
   requestNumber: string
