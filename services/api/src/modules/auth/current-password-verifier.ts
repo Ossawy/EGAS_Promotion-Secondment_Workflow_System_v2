@@ -25,10 +25,10 @@ export class DatabaseCurrentPasswordVerifier implements CurrentPasswordVerifier 
     password: string
   ): Promise<boolean> {
     const result = await db.query<PasswordRow>(
-      `SELECT passwordhash AS "passwordHash"
-         FROM egas_useraccount
+      `SELECT password_hash AS "passwordHash"
+         FROM user_account
         WHERE id = $1
-          AND isactive = TRUE`,
+          AND is_active = TRUE`,
       [userId]
     )
 
@@ -51,10 +51,10 @@ export function signaturePassword(value: unknown): string {
     )
   }
 
-  if (typeof value !== 'string' || value.length > 256) {
+  if (typeof value !== 'string' || value.length < 8 || value.length > 256) {
     throw new AppError(
       400,
-      'Signature password must be between 1 and 256 characters',
+      'Signature password must be between 8 and 256 characters',
       'SIGNATURE_PASSWORD_INVALID_FORMAT'
     )
   }

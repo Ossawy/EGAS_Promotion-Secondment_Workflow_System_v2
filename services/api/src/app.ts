@@ -9,6 +9,8 @@ import { authRouter } from './modules/auth/routes.ts'
 import { LocalAuthenticationProvider } from './modules/auth/local-authentication-provider.ts'
 import { healthRouter } from './modules/health/routes.ts'
 import { workflowRouter } from './modules/workflow/workflow-routes.ts'
+import { signatureRouter } from './modules/signatures/routes.ts'
+import { documentRouter } from './modules/workflow/document-routes.ts'
 
 export function createApp(pool: Pool, config: AppConfig): Express {
   const app = express()
@@ -59,6 +61,8 @@ export function createApp(pool: Pool, config: AppConfig): Express {
   app.use('/api/auth', authRouter(pool, config))
   app.use('/api/admin', adminRouter(pool, config))
   app.use('/api/workflow', workflowRouter(pool, config))
+  app.use('/api/signatures', signatureRouter(pool, config))
+  app.use('/api/documents', documentRouter(pool, config))
 
   app.use(notFound)
   app.use(errorHandler)

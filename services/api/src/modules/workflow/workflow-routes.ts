@@ -23,7 +23,7 @@ function context(res: express.Response): WorkflowRequestContext {
 
 export function workflowRouter(pool: Pool, config: AppConfig): Router {
   const router = Router()
-  const engine = new WorkflowEngineService(pool)
+  const engine = new WorkflowEngineService(pool, config)
   const promotion = new PromotionWorkflowService(pool)
   const secondment = new SecondmentWorkflowService(pool)
   const csrf = csrfProtection(pool, config)
@@ -220,6 +220,34 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     } catch (error) { next(error) }
   })
 
+  router.post('/stages/:id/sign-and-advance', csrf, async (req, res, next) => {
+    try {
+      const stageExecutionId = uuid(req.params.id, 'id')
+      const body = exactObject(req.body, ['password', 'signatureAssetId', 'jobTitleOverride'])
+      // Passwords are intentionally not passed through text(): that helper trims
+      // values, while signature reauthentication must verify the exact bytes sent.
+      const password = body.password
+      const signatureAssetId = uuid(body.signatureAssetId, 'signatureAssetId')
+      const jobTitleOverride = optionalText(body.jobTitleOverride, 'jobTitleOverride', 240)
+      const userAgent = req.headers['user-agent']
+      const evidence = {
+        ...(req.ip ? { ipAddress: req.ip } : {}),
+        ...(typeof userAgent === 'string' ? { userAgent } : {})
+      }
+      const result = await engine.signAndAdvance(
+        stageExecutionId,
+        {
+          password: password as string,
+          signatureAssetId,
+          ...(jobTitleOverride !== undefined ? { jobTitleOverride } : {})
+        },
+        context(res),
+        evidence
+      )
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
   // 6. Promotion Decisions
   router.get('/requests/:requestId/promotion/decisions', async (req, res, next) => {
     try {
@@ -253,6 +281,23 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     try {
       const requestId = uuid(req.params.requestId, 'requestId')
       const result = await secondment.getAuthoritativePositionOptions(requestId, context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  router.put('/stages/:stageExecutionId/secondment/candidates/:candidateId/preparation', csrf, async (req, res, next) => {
+    try {
+      const stageExecutionId = uuid(req.params.stageExecutionId, 'stageExecutionId')
+      const candidateId = uuid(req.params.candidateId, 'candidateId')
+      const body = exactObject(req.body, ['lastPromotionReport', 'jobCategoryCode'])
+      const lastPromotionReport = text(body.lastPromotionReport, 'lastPromotionReport', 4000, 1)
+      const jobCategoryCode = text(body.jobCategoryCode, 'jobCategoryCode', 80, 1)
+      const result = await secondment.upsertS2CandidatePreparation(
+        stageExecutionId,
+        candidateId,
+        { lastPromotionReport, jobCategoryCode },
+        context(res)
+      )
       res.json(result)
     } catch (error) { next(error) }
   })

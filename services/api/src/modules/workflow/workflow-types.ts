@@ -68,6 +68,12 @@ export interface AddNoteInput {
   candidateId?: string
 }
 
+export interface SignAndAdvanceInput {
+  password: string
+  signatureAssetId: string
+  jobTitleOverride?: string | null
+}
+
 export type PromotionDecisionType = 'SAME_POSITION' | 'OTHER_POSITION'
 
 export interface UpsertPromotionDecisionInput {
@@ -100,6 +106,18 @@ export interface SecondmentPositionOptionInput {
   positionTitle: string
   organizationalDependency: string
   qualificationStatus: string
+}
+
+export interface SecondmentS2PreparationInput {
+  lastPromotionReport: string
+  jobCategoryCode: string
+}
+
+export interface SecondmentS2PreparationSummary {
+  candidateId: string
+  lastPromotionReport: string
+  jobCategoryCode: string
+  jobCategoryName: string
 }
 
 export interface SecondmentPositionOptionSummary {
@@ -137,6 +155,9 @@ export interface SecondmentS2CandidateOptionGroup {
   candidateId: string
   personnelNumber: string
   employeeName: string
+  lastPromotionReport: string
+  jobCategoryCode: string
+  jobCategoryName: string
   options: SecondmentPositionOptionSummary[]
 }
 
@@ -148,6 +169,22 @@ export interface SecondmentS2ValidationResult {
 export interface SecondmentS3ValidationResult {
   nextStageCode: 'S4'
   selections: SecondmentSelectionSummary[]
+}
+
+export interface WorkflowSignoffSummary {
+  id: string
+  stageExecutionId: string
+  signerUserId: string
+  signerName: string
+  signerUsername: string
+  signerJobTitle: string
+  jobTitleWasOverridden: boolean
+  operationalUnitId: string
+  operationalUnitKind: string
+  managerAssignmentId: string | null
+  signatureAssetId: string
+  signatureSha256: string
+  signedAt: string
 }
 
 export interface WorkflowRequestSummary {

@@ -2,6 +2,54 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { Queryable } from '../../db/types.ts'
 import { AppError } from '../../shared/errors.ts'
 
+type PromotionDecisionSnapshot = {
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  sourceP4StageExecutionId: string
+  decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
+  targetJobTitle: string | null
+  effectiveNominatedJob: string | null
+  recommendation: string | null
+  notes: string | null
+}
+
+type SecondmentPositionOptionSnapshot = {
+  id: string
+  sourceStageExecutionId: string
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  positionTitle: string
+  organizationalDependency: string
+  qualificationStatusCode: string
+  qualificationStatusName: string | null
+  displayOrder: number
+}
+
+type SecondmentPositionOptionsSnapshot = Array<{
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  lastPromotionReport: string
+  jobCategoryCode: string
+  jobCategoryName: string
+  options: SecondmentPositionOptionSnapshot[]
+}>
+
+type SecondmentSelectionSnapshot = {
+  candidateId: string
+  personnelNumber: string
+  employeeName: string
+  sourceS3StageExecutionId: string
+  selectedOptionId: string
+  sourceS2StageExecutionId: string
+  positionTitle: string
+  organizationalDependency: string
+  qualificationStatusCode: string
+  qualificationStatusName: string | null
+}
+
 export interface StageSnapshotData {
   requestId: string
   requestNumber: string
@@ -26,29 +74,9 @@ export interface StageSnapshotData {
     frozenData: Record<string, unknown>
     acceptedData: Record<string, unknown>
   }>
-  promotionDecisions?: Array<{
-    candidateId: string
-    personnelNumber: string
-    employeeName: string
-    sourceP4StageExecutionId: string
-    decisionType: 'SAME_POSITION' | 'OTHER_POSITION'
-    targetJobTitle: string | null
-    effectiveNominatedJob: string | null
-    recommendation: string | null
-    notes: string | null
-  }>
-  secondmentSelections?: Array<{
-    candidateId: string
-    personnelNumber: string
-    employeeName: string
-    sourceS3StageExecutionId: string
-    selectedOptionId: string
-    sourceS2StageExecutionId: string
-    positionTitle: string
-    organizationalDependency: string
-    qualificationStatusCode: string
-    qualificationStatusName: string | null
-  }>
+  promotionDecisions?: PromotionDecisionSnapshot[]
+  secondmentPositionOptions?: SecondmentPositionOptionsSnapshot
+  secondmentSelections?: SecondmentSelectionSnapshot[]
   submittedAt: string
   submittedByUserId: string
 }
