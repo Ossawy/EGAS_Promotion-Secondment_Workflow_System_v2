@@ -10,6 +10,7 @@ tmp/
 .env
 .env.*
 !.env.example
+.egas-local/
 .cdsrc-private.json
 default-env.json
 
