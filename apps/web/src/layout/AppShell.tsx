@@ -1,71 +1,50 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Bell,
   Building2,
   ChevronLeft,
-  Database,
   FileClock,
   History,
   Inbox,
   LayoutDashboard,
   LogOut,
   Menu,
+  PenLine,
   Search,
-  ShieldCheck,
-  UserCog,
   UserRound,
   Users,
   X,
   type LucideIcon
 } from 'lucide-react'
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { apiJson, apiRequest } from '../api/client'
-import type { NotificationItem } from '../api/workflow-types'
-import type { Role } from '../api/types'
+import { workflowApi } from '../api/endpoints'
+import { UNIT_KIND_LABELS } from '../api/types'
+import type { NotificationSummary } from '../api/workflow-types'
+import { STAGE_LABELS } from '../api/workflow-types'
 import { BrandMark } from '../components/BrandMark'
 import { useAuth } from '../auth/AuthProvider'
+import { arabicErrorMessage } from '../api/messages'
 
 type NavigationItem = { to: string, label: string, icon: LucideIcon }
 
-const roleLabels: Record<Role, string> = {
-  ADMIN: 'إدارة النظام',
-  EMPLOYEE_AFFAIRS: 'شئون العاملين',
-  ORGANIZATION: 'إدارة التنظيم',
-  APPROVING_AUTHORITY: 'سلطة الاعتماد'
+const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
+  STAGE_INBOX_ARRIVED: 'وصلت مرحلة جديدة إلى صندوق المدير',
+  STAGE_ASSIGNED: 'تم إسناد عمل جديد إليك',
+  STAGE_SUBMITTED_TO_MANAGER: 'رفع الموظف العمل للمراجعة',
+  CORRECTION_REQUIRED: 'مطلوب تصحيح منك على مرحلة مسندة',
+  STAGE_RETURNED: 'أُرجعت إليك مرحلة من مرحلة لاحقة',
+  WORKFLOW_REJECTED: 'تم رفض طلب — بانتظار قرار الموارد البشرية'
 }
 
-const commonTail: NavigationItem[] = [
-  { to: '/notifications', label: 'الإشعارات', icon: Bell }
-]
+function notificationLabel(item: NotificationSummary): string {
+  return NOTIFICATION_TYPE_LABELS[item.notificationType] ?? 'إشعار نظامي جديد'
+}
 
-const navigation: Record<Role, NavigationItem[]> = {
-  EMPLOYEE_AFFAIRS: [
-    { to: '/', label: 'لوحة المتابعة', icon: LayoutDashboard },
-    { to: '/requests', label: 'طلباتي', icon: FileClock },
-    { to: '/requests/new', label: 'طلب جديد', icon: Inbox },
-    { to: '/history', label: 'البحث والسجل', icon: History },
-    ...commonTail
-  ],
-  ORGANIZATION: [
-    { to: '/', label: 'الرئيسية', icon: LayoutDashboard },
-    { to: '/requests', label: 'الطلبات غير المسندة', icon: Inbox },
-    { to: '/history', label: 'البحث والسجل', icon: History },
-    ...commonTail
-  ],
-  APPROVING_AUTHORITY: [
-    { to: '/', label: 'الرئيسية', icon: LayoutDashboard },
-    { to: '/requests', label: 'الطلبات', icon: ShieldCheck },
-    { to: '/history', label: 'سجل القرارات', icon: History },
-    ...commonTail
-  ],
-  ADMIN: [
-    { to: '/', label: 'لوحة الإدارة', icon: LayoutDashboard },
-    { to: '/admin/users', label: 'المستخدمون', icon: Users },
-    { to: '/admin/authorities', label: 'تعيينات السلطة', icon: UserCog },
-    { to: '/admin/dataset', label: 'البيانات السنوية', icon: Database },
-    { to: '/admin/audit', label: 'التدقيق', icon: History },
-    ...commonTail
-  ]
+function identityLabel(isAdmin: boolean, unitKind?: string | null, isManager?: boolean): string {
+  if (isAdmin) return 'إدارة النظام'
+  if (!unitKind) return ''
+  const base = UNIT_KIND_LABELS[unitKind as keyof typeof UNIT_KIND_LABELS] ?? unitKind
+  return isManager ? `${base} — مدير الوحدة` : base
 }
 
 function relativeTime(value: string): string {
@@ -77,32 +56,81 @@ function relativeTime(value: string): string {
   return new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium' }).format(new Date(value))
 }
 
+export function useNotifications(pollTop = 8, enabled = true) {
+  const [notifications, setNotifications] = useState<NotificationSummary[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+
+  const reload = useCallback(async () => {
+    if (!enabled) return
+    try {
+      const [recent, unread] = await Promise.all([
+        workflowApi.notifications(pollTop),
+        workflowApi.notifications(100, true)
+      ])
+      setNotifications(recent)
+      setUnreadCount(unread.length)
+      setError(null)
+    } catch (requestError) {
+      setError(arabicErrorMessage(requestError))
+    }
+  }, [enabled, pollTop])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const markRead = useCallback(async (item: NotificationSummary): Promise<void> => {
+    if (!item.isRead) {
+      try {
+        await workflowApi.markNotificationRead(item.id)
+        setNotifications(current => current.map(entry => entry.id === item.id ? { ...entry, isRead: true } : entry))
+        setUnreadCount(value => Math.max(0, value - 1))
+      } catch {}
+    }
+  }, [])
+
+  return { notifications, unreadCount, error, reload, markRead, setNotifications }
+}
+
 export function AppShell(): React.JSX.Element {
   const auth = useAuth()
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [notifications, setNotifications] = useState<NotificationItem[]>([])
-  const [unreadCount, setUnreadCount] = useState(0)
   const [globalSearch, setGlobalSearch] = useState('')
   const user = auth.user
-  const role = useMemo(() => {
-    if (user?.accountType === 'ADMIN') return 'ADMIN'
-    if (user?.operationalContext?.unitKind === 'HR') return 'EMPLOYEE_AFFAIRS'
-    if (user?.operationalContext?.unitKind === 'ORG') return 'ORGANIZATION'
-    if (user?.operationalContext?.isManager && user?.operationalContext?.unitKind === 'AUTH') return 'APPROVING_AUTHORITY'
-    return null
-  }, [user])
+  const isAdmin = user?.accountType === 'ADMIN'
+  const operationalContext = user?.operationalContext ?? null
 
-  const items = useMemo(() => role ? navigation[role] : [], [role])
+  const items = useMemo<NavigationItem[]>(() => {
+    if (isAdmin) {
+      return [
+        { to: '/', label: 'الرئيسية', icon: LayoutDashboard },
+        { to: '/admin/accounts', label: 'الحسابات', icon: Users },
+        { to: '/admin/units', label: 'الوحدات التشغيلية', icon: Building2 },
+        { to: '/admin/audit', label: 'سجل التدقيق', icon: History }
+      ]
+    }
+    const list: NavigationItem[] = [{ to: '/', label: 'الرئيسية', icon: LayoutDashboard }]
+    if (operationalContext?.isManager) {
+      list.push({ to: '/inbox', label: 'صندوق المدير', icon: Inbox })
+    }
+    if (operationalContext?.unitKind === 'HR') {
+      list.push({ to: '/requests/new', label: 'إنشاء طلب', icon: PenLine })
+    }
+    list.push(
+      { to: '/my-work', label: 'عملي', icon: FileClock },
+      { to: '/requests', label: 'الطلبات والسجل', icon: History },
+      { to: '/notifications', label: 'الإشعارات', icon: Bell },
+      { to: '/signature', label: 'إعدادات التوقيع', icon: PenLine }
+    )
+    return list
+  }, [isAdmin, operationalContext])
 
-  useEffect(() => {
-    let active = true
-    Promise.all([apiRequest<NotificationItem[]>('/api/notifications?top=8'), apiRequest<{ count: number }>('/api/notifications/unread-count')])
-      .then(([items, unread]) => { if (active) { setNotifications(items); setUnreadCount(unread.count) } })
-      .catch(() => { if (active) { setNotifications([]); setUnreadCount(0) } })
-    return () => { active = false }
-  }, [role])
+  // Notifications only apply to operational accounts.
+  const needsNotifications = !isAdmin
+  const { notifications, unreadCount, reload, markRead } = useNotifications(8, needsNotifications)
 
   useEffect(() => {
     function closeOverlays(event: KeyboardEvent): void {
@@ -115,16 +143,10 @@ export function AppShell(): React.JSX.Element {
     return () => document.removeEventListener('keydown', closeOverlays)
   }, [])
 
-  async function markRead(item: NotificationItem): Promise<void> {
-    if (!item.isRead) {
-      try {
-        const updated = await apiJson<NotificationItem>(`/api/notifications/${item.id}/read`, 'POST', {})
-        setNotifications(current => current.map(entry => entry.id === updated.id ? updated : entry))
-        setUnreadCount(value => Math.max(0, value - 1))
-      } catch {}
-    }
-    if (item.requestId) navigate(`/requests/${item.requestId}`)
+  async function openNotification(item: NotificationSummary): Promise<void> {
+    await markRead(item)
     setNotificationsOpen(false)
+    if (item.requestId) navigate(`/requests/${item.requestId}`)
   }
 
   async function logout(): Promise<void> {
@@ -158,7 +180,7 @@ export function AppShell(): React.JSX.Element {
         <div className="sidebar__footer">
           <Link to="/" className="sidebar__user">
             <span className="avatar"><UserRound size={20} /></span>
-            <span><strong>{auth.user?.displayName}</strong><small>{role ? roleLabels[role] : ''}</small></span>
+            <span><strong>{user?.displayName}</strong><small>{identityLabel(isAdmin, operationalContext?.unitKind, operationalContext?.isManager)}</small></span>
             <ChevronLeft size={18} aria-hidden="true" />
           </Link>
           <button className="sidebar__logout" type="button" onClick={() => void logout()}><LogOut size={20} /> تسجيل الخروج</button>
@@ -168,18 +190,20 @@ export function AppShell(): React.JSX.Element {
       <div className="workspace">
         <header className="topbar">
           <button type="button" className="icon-button topbar__menu" onClick={() => setMenuOpen(true)} aria-label="فتح القائمة" aria-controls="main-navigation" aria-expanded={menuOpen}><Menu /></button>
-          <form className="topbar__search" onSubmit={event => { event.preventDefault(); const value = globalSearch.trim(); navigate(value ? `/history?q=${encodeURIComponent(value)}` : '/history') }}>
+          <form className="topbar__search" onSubmit={event => { event.preventDefault(); const value = globalSearch.trim(); navigate(isAdmin ? (value ? `/admin/audit?actor=${encodeURIComponent(value)}` : '/admin/audit') : (value ? `/requests?q=${encodeURIComponent(value)}` : '/requests')) }}>
             <Search size={20} aria-hidden="true" />
-            <input type="search" aria-label="بحث شامل" value={globalSearch} onChange={event => setGlobalSearch(event.target.value)} maxLength={120} placeholder="رقم طلب أو رقم عامل..." />
+            <input type="search" aria-label={isAdmin ? 'بحث باسم منفذ في سجل التدقيق' : 'بحث في الطلبات'} value={globalSearch} onChange={event => setGlobalSearch(event.target.value)} maxLength={120} placeholder={isAdmin ? 'اسم منفذ الإجراء...' : 'رقم الطلب أو اسم الموظف...'} />
           </form>
-          <div className="topbar__actions">
-            <button type="button" className="icon-button notification-button" aria-label={`الإشعارات، ${unreadCount} غير مقروء`} aria-controls="notification-drawer" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen(value => !value)}>
-              <Bell size={22} />{unreadCount > 0 && <span aria-hidden="true">{unreadCount > 9 ? '9+' : unreadCount}</span>}
-            </button>
-            <span className="sr-only" aria-live="polite">{unreadCount} إشعار غير مقروء</span>
-          </div>
+          {!isAdmin && (
+            <div className="topbar__actions">
+              <button type="button" className="icon-button notification-button" aria-label={`الإشعارات، ${unreadCount} غير مقروء`} aria-controls="notification-drawer" aria-expanded={notificationsOpen} onClick={() => { if (!notificationsOpen) void reload(); setNotificationsOpen(value => !value) }}>
+                <Bell size={22} />{unreadCount > 0 && <span aria-hidden="true">{unreadCount > 9 ? '9+' : unreadCount}</span>}
+              </button>
+              <span className="sr-only" aria-live="polite">{unreadCount} إشعار غير مقروء</span>
+            </div>
+          )}
         </header>
-        {notificationsOpen && (
+        {needsNotifications && notificationsOpen && (
           <aside id="notification-drawer" className="notification-drawer" aria-label="أحدث الإشعارات">
             <div className="notification-drawer__header">
               <div><Bell size={20} /><strong>الإشعارات</strong></div>
@@ -190,9 +214,13 @@ export function AppShell(): React.JSX.Element {
             ) : (
               <div className="notification-list">
                 {notifications.map(item => (
-                  <button type="button" key={item.id} className={`notification-item${item.isRead ? '' : ' notification-item--unread'}`} onClick={() => void markRead(item)}>
+                  <button type="button" key={item.id} className={`notification-item${item.isRead ? '' : ' notification-item--unread'}`} onClick={() => void openNotification(item)}>
                     <span className="notification-item__dot" aria-hidden="true" />
-                    <span><strong>{item.titleAr}</strong>{item.bodyAr && <small>{item.bodyAr}</small>}<time>{relativeTime(item.createdAt)}</time></span>
+                    <span>
+                      <strong>{notificationLabel(item)}</strong>
+                      {item.requestNumber && <small>طلب {item.requestNumber}{item.stageCode ? ` • ${STAGE_LABELS[item.stageCode]}` : ''}</small>}
+                      <time>{relativeTime(item.createdAt)}</time>
+                    </span>
                   </button>
                 ))}
               </div>

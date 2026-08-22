@@ -64,6 +64,7 @@ export async function createPhase6Fixture(): Promise<Phase6Fixture> {
   db.public.none(await readFile(new URL('../../src/db/migrations/002_phase2_annual_data_integrity.sql', import.meta.url), 'utf8'))
   db.public.none(await readFile(new URL('../../src/db/migrations/003_phase3_workflow_indexes.sql', import.meta.url), 'utf8'))
   db.public.none(await readFile(new URL('../../src/db/migrations/004_phase6_frozen_pdf_uniqueness.sql', import.meta.url), 'utf8'))
+  db.public.none(await readFile(new URL('../../src/db/migrations/005_audit_identity_snapshots.sql', import.meta.url), 'utf8'))
   const pool = new (db.adapters.createPg().Pool)() as unknown as Pool
   const probeRequestId = randomUUID()
   const probeIterationId = randomUUID()

@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 const migration = new URL('../src/db/migrations/001_initial_v5_schema.sql', import.meta.url)
+const auditSnapshotsMigration = new URL('../src/db/migrations/005_audit_identity_snapshots.sql', import.meta.url)
+const historyGuardsMigration = new URL('../src/db/migrations/006_core_history_and_hierarchy_guards.sql', import.meta.url)
 
 describe('Phase 1 v5 schema contract', () => {
   it('uses the clean lowercase v5 physical baseline', async () => {
@@ -37,6 +39,23 @@ describe('Phase 1 v5 schema contract', () => {
     for (const file of files) {
       expect(file).toMatch(/^\d{3}_[a-z0-9_]+\.sql$/)
       expect(file).not.toMatch(/egas|postgres_integrity|phase2b|phase3a|workflow_draft/)
+    }
+  })
+
+  it('freezes audit identity and protects hierarchy/history at the database boundary', async () => {
+    const auditSql = await readFile(auditSnapshotsMigration, 'utf8')
+    const guardSql = await readFile(historyGuardsMigration, 'utf8')
+
+    expect(auditSql).toContain('ADD COLUMN actor_snapshot jsonb')
+    expect(auditSql).toContain('ADD COLUMN subject_snapshot jsonb')
+    expect(guardSql).toContain('user_unit_membership_operational_guard')
+    expect(guardSql).toContain('unit_manager_assignment_membership_guard')
+    for (const table of [
+      'audit_event', 'security_event', 'stage_action', 'workflow_note',
+      'stage_submission_snapshot', 'workflow_signoff', 'final_form_snapshot',
+      'frozen_pdf_document', 'employee_annual_snapshot'
+    ]) {
+      expect(guardSql).toContain(`CREATE TRIGGER ${table}_immutable`)
     }
   })
 })

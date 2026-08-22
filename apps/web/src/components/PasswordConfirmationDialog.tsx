@@ -12,12 +12,16 @@ export function PasswordConfirmationDialog({
   open,
   busy,
   error,
+  contextLabel,
+  signaturePreviewUrl,
   onConfirm,
   onCancel
 }: {
   open: boolean
   busy: boolean
   error: string | null
+  contextLabel?: string
+  signaturePreviewUrl?: string
   onConfirm(password: string): Promise<void>
   onCancel(): void
 }): React.JSX.Element | null {
@@ -156,7 +160,7 @@ export function PasswordConfirmationDialog({
           <p
             id="signature-password-description"
           >
-            أدخل كلمة مرور حسابك لتأكيد هذا التوقيع.
+            أدخل كلمة مرور حسابك لاعتماد وتوقيع {contextLabel ?? 'هذه المرحلة'}.
           </p>
         </div>
 
@@ -175,6 +179,8 @@ export function PasswordConfirmationDialog({
               {error}
             </p>
           )}
+
+          {signaturePreviewUrl && <img className="signature-approval-preview" src={signaturePreviewUrl} alt="معاينة أصل التوقيع المختار" />}
 
           <label>
             كلمة المرور
@@ -228,7 +234,7 @@ export function PasswordConfirmationDialog({
             >
               {busy
                 ? 'جارٍ التحقق...'
-                : 'تأكيد والتوقيع'}
+                : 'اعتماد وتوقيع'}
             </button>
           </div>
         </form>

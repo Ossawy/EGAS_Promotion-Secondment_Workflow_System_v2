@@ -52,20 +52,15 @@ export async function bootstrapAdmin(input: BootstrapInput, suppliedPool?: Pool)
   await withTransaction(pool, async client => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('egas.bootstrap.admin'))")
     const privileged = await client.query(
-      `SELECT role_assignment.id
-         FROM egas_useraccountrole AS role_assignment
-         JOIN egas_useraccount AS account ON account.id = role_assignment.user_id
-        WHERE account.isactive = TRUE
-          AND role_assignment.isactive = TRUE
-          AND role_assignment.role = 'ADMIN'
-          AND role_assignment.canmanageadmins = TRUE
+      `SELECT id FROM user_account
+        WHERE is_active=TRUE AND account_type='ADMIN'
         LIMIT 1`
     )
     if (privileged.rowCount) {
-      throw new Error('Bootstrap refused: an active Manage-Admins account already exists')
+      throw new Error('Bootstrap refused: an active ADMIN account already exists')
     }
     const duplicate = await client.query(
-      'SELECT id FROM egas_useraccount WHERE username = $1 LIMIT 1',
+      'SELECT id FROM user_account WHERE username=$1 LIMIT 1',
       [input.username]
     )
     if (duplicate.rowCount) throw new Error('Bootstrap refused: username already exists')
@@ -73,17 +68,11 @@ export async function bootstrapAdmin(input: BootstrapInput, suppliedPool?: Pool)
     const userId = randomUUID()
     const now = new Date()
     await client.query(
-      `INSERT INTO egas_useraccount
-        (id, username, staffidentifier, displayname, jobtitle, passwordhash,
-         mustchangepassword, isactive, failedlogincount, createdat, updatedat, version)
-       VALUES ($1, $2, $3, $4, $5, $6, TRUE, TRUE, 0, $7, $7, 1)`,
+      `INSERT INTO user_account
+        (id,username,staff_identifier,display_name,job_title,account_type,password_hash,
+         must_change_password,is_active,failed_login_count,created_at,updated_at,version)
+       VALUES ($1,$2,$3,$4,$5,'ADMIN',$6,TRUE,TRUE,0,$7,$7,1)`,
       [userId, input.username, input.staffIdentifier, input.displayName, input.jobTitle, passwordHash, now]
-    )
-    await client.query(
-      `INSERT INTO egas_useraccountrole
-        (id, user_id, role, canmanageadmins, isactive, grantedat)
-       VALUES ($1, $2, 'ADMIN', TRUE, TRUE, $3)`,
-      [randomUUID(), userId, now]
     )
   })
 }

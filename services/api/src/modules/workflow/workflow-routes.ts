@@ -4,6 +4,7 @@ import type { AppConfig } from '../../config/env.ts'
 import { authContext, requireOperational } from '../../middleware/authorize.ts'
 import { csrfProtection } from '../../middleware/csrf.ts'
 import { exactObject, optionalText, text, uuid } from '../../shared/validation.ts'
+import { AppError } from '../../shared/errors.ts'
 import { WorkflowEngineService } from './workflow-engine-service.ts'
 import { PromotionWorkflowService } from './promotion-workflow-service.ts'
 import { SecondmentWorkflowService } from './secondment-workflow-service.ts'
@@ -45,7 +46,12 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     try {
       const skip = typeof req.query.skip === 'string' && /^\d+$/.test(req.query.skip) ? Number(req.query.skip) : 0
       const top = typeof req.query.top === 'string' && /^\d+$/.test(req.query.top) ? Math.min(100, Number(req.query.top)) : 50
-      const result = await engine.listRequests(context(res), skip, top)
+      const query=optionalText(req.query.q,'q',120)
+      const status=optionalText(req.query.status,'status',60)
+      const requestType=optionalText(req.query.requestType,'requestType',20)
+      if(status&&!['DRAFT','ACTIVE','REJECTED_PENDING_HR_DECISION','COMPLETED','CANCELLED'].includes(status))throw new AppError(400,'status is invalid')
+      if(requestType&&!['PROMOTION','SECONDMENT'].includes(requestType))throw new AppError(400,'requestType is invalid')
+      const result = await engine.listRequests(context(res), skip, top, {query,status,requestType})
       res.json(result)
     } catch (error) { next(error) }
   })
@@ -96,6 +102,25 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
     } catch (error) { next(error) }
   })
 
+  // Phase 7: read-only HR preparation preview sharing addCandidate resolution semantics.
+  router.get('/requests/:requestId/candidate-lookup/:personnelNumber', async (req, res, next) => {
+    try {
+      const requestId = uuid(req.params.requestId, 'requestId')
+      const personnelNumber = text(req.params.personnelNumber, 'personnelNumber', 30)
+      const result = await engine.lookupCandidatePreview(requestId, personnelNumber, context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  // Phase 7: safe signoff evidence read for signer blocks.
+  router.get('/requests/:requestId/signoffs', async (req, res, next) => {
+    try {
+      const requestId = uuid(req.params.requestId, 'requestId')
+      const result = await engine.getRequestSignoffs(requestId, context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
   // 3. Notes & Timeline
   router.get('/requests/:requestId/notes', async (req, res, next) => {
     try {
@@ -136,6 +161,15 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
   router.get('/manager/inbox', async (_req, res, next) => {
     try {
       const result = await engine.getManagerInbox(context(res))
+      res.json(result)
+    } catch (error) { next(error) }
+  })
+
+  // Phase 7: safe assignable-subordinate listing for the current unit manager.
+  // The managed unit is derived from session identity; callers never pass a unit id.
+  router.get('/manager/subordinates', async (req, res, next) => {
+    try {
+      const result = await engine.getManagerSubordinates(context(res))
       res.json(result)
     } catch (error) { next(error) }
   })
@@ -184,9 +218,13 @@ export function workflowRouter(pool: Pool, config: AppConfig): Router {
   router.post('/stages/:id/internal-correction', csrf, async (req, res, next) => {
     try {
       const stageExecutionId = uuid(req.params.id, 'id')
-      const body = exactObject(req.body, ['reason'])
+      const body = exactObject(req.body, ['reason', 'assignedToUserId', 'managerHandlesPersonally'])
       const reason = text(body.reason, 'reason', 1000)
-      const result = await engine.internalCorrection(stageExecutionId, { reason }, context(res))
+      const result = await engine.internalCorrection(stageExecutionId, {
+        reason,
+        ...(body.assignedToUserId !== undefined ? { assignedToUserId: body.assignedToUserId as string } : {}),
+        ...(body.managerHandlesPersonally !== undefined ? { managerHandlesPersonally: body.managerHandlesPersonally as boolean } : {})
+      }, context(res))
       res.json(result)
     } catch (error) { next(error) }
   })

@@ -23,6 +23,7 @@ beforeEach(async () => {
   db.public.registerFunction({ name:'hashtext', args:[DataType.text], returns:DataType.integer, implementation:()=>1 })
   db.public.registerFunction({ name:'pg_advisory_xact_lock', args:[DataType.integer], returns:DataType.integer, implementation:()=>1 })
   db.public.none(await readFile(new URL('../src/db/migrations/001_initial_v5_schema.sql', import.meta.url), 'utf8'))
+  db.public.none(await readFile(new URL('../src/db/migrations/005_audit_identity_snapshots.sql', import.meta.url), 'utf8'))
   const adapter = db.adapters.createPg(); pool = new adapter.Pool() as unknown as Pool
   admin = new V5AdminService(pool, testConfig); auth = new AuthService(pool, testConfig); hierarchy = new HierarchyService(pool)
   const provider = new LocalAuthenticationProvider(pool, testConfig)
@@ -79,6 +80,20 @@ describe('Phase 1 Critical Behavior Gaps', () => {
     
     const validated = await auth.validateSession(session.sessionId, evidence).catch(e => e)
     expect(validated).toMatchObject({code: 'AUTHENTICATION_FAILED'})
+  })
+
+  it('commits failed-login evidence and lockout state before returning the safe authentication error', async () => {
+    const unit = await admin.createUnit(actor, {kind:'HR', name:'Unit'}, evidence)
+    const op = await account('lockout_user', 'OPERATIONAL', unit.id)
+
+    await expect(auth.login('lockout_user', 'wrong-password-one', evidence)).rejects.toMatchObject({code:'AUTHENTICATION_FAILED'})
+    await expect(auth.login('lockout_user', 'wrong-password-two', evidence)).rejects.toMatchObject({code:'AUTHENTICATION_FAILED'})
+
+    const current=(await pool.query(`SELECT failed_login_count AS "failedLoginCount",locked_until AS "lockedUntil" FROM user_account WHERE id=$1`,[op.id])).rows[0]
+    expect(current.failedLoginCount).toBe(2)
+    expect(current.lockedUntil).not.toBeNull()
+    expect(Number((await pool.query(`SELECT COUNT(*)::integer AS count FROM security_event WHERE event_type='LOGIN_FAILED' AND actor_user_id IS NULL`)).rows[0].count)).toBe(2)
+    expect(Number((await pool.query(`SELECT COUNT(*)::integer AS count FROM audit_event WHERE event_type='LOGIN_FAILED' AND actor_user_id IS NULL AND subject_id=$1`,[op.id])).rows[0].count)).toBe(2)
   })
 
 
@@ -152,6 +167,19 @@ describe('Phase 1 Critical Behavior Gaps', () => {
     await admin.setAccountActive(actor, m1.id, false, evidence)
     
     await expect(admin.replaceManager(actor, unit.id, {managerUserId: m1.id}, evidence)).rejects.toMatchObject({status: 400})
+  })
+
+  it('requires manager replacement before disabling a current unit manager', async () => {
+    const unit = await admin.createUnit(actor, {kind:'HR', name:'Unit'}, evidence)
+    const manager = await account('current_manager', 'OPERATIONAL', unit.id)
+    await admin.replaceManager(actor, unit.id, {managerUserId: manager.id}, evidence)
+    await expect(admin.setAccountActive(actor, manager.id, false, evidence)).rejects.toMatchObject({code:'MANAGER_REPLACEMENT_REQUIRED'})
+    expect((await admin.account(manager.id)).isActive).toBe(true)
+  })
+
+  it('prevents disabling the final active ADMIN account', async () => {
+    await expect(admin.setAccountActive(actor, actor.userId, false, evidence)).rejects.toMatchObject({code:'LAST_ADMIN_REQUIRED'})
+    expect((await admin.account(actor.userId)).isActive).toBe(true)
   })
 
 

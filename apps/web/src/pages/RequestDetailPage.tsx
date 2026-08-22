@@ -1,274 +1,272 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import {
-  AlertTriangle, Building2, CalendarDays, Check, ClipboardList, Clock3, FileText,
-  MessageSquarePlus, Search, ShieldCheck, Trash2, UserRoundPlus, UsersRound
-} from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
-import { ApiError, apiJson, apiRequest } from '../api/client'
-import type {
-  AuthorityOption, EmployeeSnapshotView, TimelineEntry, WorkflowNote, WorkflowRequestDetail
+import { Inbox, RefreshCw } from 'lucide-react'
+import { workflowApi } from '../api/endpoints'
+import { arabicErrorMessage } from '../api/messages'
+import {
+  REQUEST_STATUS_LABELS,
+  STAGE_LABELS,
+  WORK_STATE_LABELS,
+  type RequestCandidateSummary,
+  type StageExecutionSummary,
+  type WorkflowRequestStatus,
+  type WorkflowRequestSummary,
+  type WorkflowSignoffView
 } from '../api/workflow-types'
-import { useAuth } from '../auth/AuthProvider'
-import { EmptyState } from '../components/EmptyState'
-import { StatusBadge } from '../components/StatusBadge'
-import { SecondmentWorkflowPanel } from '../components/SecondmentWorkflowPanel'
-import { PromotionWorkflowPanel } from '../components/PromotionWorkflowPanel'
-import { WorkflowControlsPanel } from '../components/WorkflowControlsPanel'
-import { SignoffPanel } from '../components/SignoffPanel'
+import { CandidatePanel } from '../components/CandidatePanel'
 import { DocumentPanel } from '../components/DocumentPanel'
+import { NotesPanel, TimelinePanel } from '../components/NotesTimelinePanels'
+import { PromotionDecisionsPanel } from '../components/PromotionDecisionsPanel'
+import { SecondmentStagePanel } from '../components/SecondmentStagePanel'
+import { SignoffsView } from '../components/SignoffsView'
+import { StageActionsPanel } from '../components/StageActionsPanel'
+import { StatusBadge, StageChip } from '../components/StatusBadge'
+import { EmptyState } from '../components/EmptyState'
+import { useAuth } from '../auth/AuthProvider'
 
-const actionLabels: Record<string, string> = {
-  REQUEST_CREATED: 'إنشاء الطلب', STAGE_TASK_CREATED: 'فتح مهمة المرحلة',
-  CANDIDATE_ADDED: 'إضافة عامل', CANDIDATE_REMOVED: 'إزالة عامل',
-  AUTHORITY_SELECTED: 'اختيار سلطة الاعتماد', NOTE_ADDED: 'إضافة ملاحظة'
-}
+type Detail = WorkflowRequestSummary & { candidates: RequestCandidateSummary[] }
 
-const roleLabels: Record<string, string> = {
-  EMPLOYEE_AFFAIRS: 'شئون العاملين', ORGANIZATION: 'التنظيم', APPROVING_AUTHORITY: 'سلطة الاعتماد', ADMIN: 'إدارة النظام'
-}
+const INITIAL_STAGE_CODES = new Set(['P1', 'S1'])
+const DOMAIN_EDITABLE_WORK_STATES = new Set(['ASSIGNED', 'IN_PROGRESS', 'CORRECTION_REQUIRED'])
 
-const errorLabels: Record<string, string> = {
-  ACTIVE_SNAPSHOT_UNAVAILABLE: 'لا توجد لقطة سنوية نشطة حالياً.',
-  EMPLOYEE_NOT_IN_ACTIVE_SNAPSHOT: 'رقم العامل غير موجود في اللقطة السنوية النشطة.',
-  EMPLOYEE_ROUTING_UNRESOLVED: 'تعذر تحديد مسار العامل من البيانات السنوية.',
-  WORKFLOW_ROUTING_MISMATCH: 'يجب أن ينتمي جميع العاملين في الطلب إلى وحدة مسار واحدة.',
-  WORKFLOW_CANDIDATE_DUPLICATE: 'هذا العامل مضاف بالفعل إلى الطلب.',
-  WORKFLOW_AUTHORITY_NOT_FOUND: 'تعيين سلطة الاعتماد لم يعد متاحاً لهذه الوحدة.'
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) return errorLabels[error.code] ?? error.message
-  return 'تعذر إتمام العملية. يرجى المحاولة مرة أخرى.'
-}
-
-function formatDate(value: string): string {
+function formatDateTime(value: string): string {
   return new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
-function CandidateWarnings({ candidate }: { candidate: EmployeeSnapshotView | WorkflowRequestDetail['candidates'][number] }): React.JSX.Element | null {
-  if (candidate.warnings.performanceMissing) return <span className="inline-warning"><AlertTriangle size={14} /> تقييم الأداء غير متاح</span>
-  if (candidate.warnings.performanceRequiresAttention) return <span className="inline-warning"><AlertTriangle size={14} /> التقييم يحتاج مراجعة</span>
-  return null
-}
-
 export function RequestDetailPage(): React.JSX.Element {
-  const { id = '' } = useParams()
+  const { id } = useParams()
   const { user } = useAuth()
-  const [detail, setDetail] = useState<WorkflowRequestDetail | null>(null)
-  const [notes, setNotes] = useState<WorkflowNote[]>([])
-  const [timeline, setTimeline] = useState<TimelineEntry[]>([])
-  const [authorities, setAuthorities] = useState<AuthorityOption[]>([])
-  const [personnelNumber, setPersonnelNumber] = useState('')
-  const [employee, setEmployee] = useState<EmployeeSnapshotView | null>(null)
-  const [noteMessage, setNoteMessage] = useState('')
-  const [noteCandidateId, setNoteCandidateId] = useState('')
-  const [selectedAuthority, setSelectedAuthority] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<string | null>(null)
+  const [detail, setDetail] = useState<Detail | null>(null)
+  const [signoffs, setSignoffs] = useState<WorkflowSignoffView[]>([])
+  const [myWorkStages, setMyWorkStages] = useState<StageExecutionSummary[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [revision, setRevision] = useState(0)
+  const [notFound, setNotFound] = useState(false)
 
-  const loadSupportingData = useCallback(async (): Promise<void> => {
-    const [loadedNotes, loadedTimeline] = await Promise.all([
-      apiRequest<WorkflowNote[]>(`/api/workflow/requests/${id}/notes?top=100`),
-      apiRequest<TimelineEntry[]>(`/api/workflow/requests/${id}/timeline?top=100`)
-    ])
-    setNotes(loadedNotes)
-    setTimeline(loadedTimeline)
-  }, [id])
+  const requestId = typeof id === 'string' ? id : ''
 
-  const loadDetail = useCallback(async (): Promise<WorkflowRequestDetail> => {
-    const loaded = await apiRequest<WorkflowRequestDetail>(`/api/workflow/requests/${id}`)
-    setDetail(loaded)
-    setSelectedAuthority(loaded.approvingAuthority?.assignmentId ?? '')
-    return loaded
-  }, [id])
+  const reload = useCallback(async () => {
+    if (!requestId) return
+    setError(null)
+    try {
+      const loaded = await workflowApi.getRequest(requestId)
+      const signoffsLoaded = await workflowApi.getSignoffs(requestId).catch(() => [] as WorkflowSignoffView[])
+      // Identity resolution for presentation only: does the viewer hold the active
+      // WorkAssignment on the current execution? The server enforces every action.
+      const myWork = user?.accountType === 'OPERATIONAL'
+        ? await workflowApi.myWork().catch(() => [] as StageExecutionSummary[])
+        : []
+      const managedStages = user?.operationalContext?.isManager
+        ? (await workflowApi.managerInbox().catch(() => ({ stages: [], rejectedRequests: [] }))).stages
+        : []
+      setDetail(loaded)
+      setSignoffs(signoffsLoaded)
+      setMyWorkStages([...myWork, ...managedStages.filter(stage => !myWork.some(item => item.id === stage.id))])
+    } catch (requestError) {
+      setNotFound(true)
+      setError(arabicErrorMessage(requestError))
+    }
+  }, [requestId, user])
 
   useEffect(() => {
-    let active = true
-    setLoading(true)
-    Promise.all([loadDetail(), loadSupportingData()])
-      .catch(caught => { if (active) setError(errorMessage(caught)) })
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [loadDetail, loadSupportingData])
+    void reload()
+  }, [reload, revision])
 
-  useEffect(() => {
-    if (!detail?.editable || !detail.routingUnit || user?.operationalContext?.unitKind !== 'HR') {
-      setAuthorities([])
-      return
-    }
-    let active = true
-    apiRequest<AuthorityOption[]>(`/api/workflow/requests/${id}/authority-options`)
-      .then(options => { if (active) setAuthorities(options) })
-      .catch(caught => { if (active) setError(errorMessage(caught)) })
-    return () => { active = false }
-  }, [detail?.editable, detail?.routingUnit, id, user?.operationalContext?.unitKind])
-
-  const candidateNames = useMemo(() => new Map(detail?.candidates.map(item => [item.id, item.employeeName]) ?? []), [detail])
-
-  async function lookupEmployee(event: React.FormEvent): Promise<void> {
-    event.preventDefault()
-    const value = personnelNumber.trim()
-    if (!value) return
-    setBusy('lookup')
-    setError(null)
-    setEmployee(null)
+  async function runRequestAction(action: () => Promise<unknown>): Promise<void> {
+    setBusy(true)
+    setActionError(null)
     try {
-      setEmployee(await apiRequest<EmployeeSnapshotView>(`/api/employee-data/employees/${encodeURIComponent(value)}`))
-    } catch (caught) {
-      setError(errorMessage(caught))
+      await action()
+      await reload()
+      setRevision(value => value + 1)
+    } catch (requestError) {
+      setActionError(arabicErrorMessage(requestError))
     } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
 
-  async function addEmployee(): Promise<void> {
-    if (!employee) return
-    setBusy('add')
-    setError(null)
-    try {
-      const updated = await apiJson<WorkflowRequestDetail>(`/api/workflow/requests/${id}/candidates`, 'POST', { personnelNumber: employee.personnelNumber })
-      setDetail(updated)
-      setEmployee(null)
-      setPersonnelNumber('')
-      await loadSupportingData()
-    } catch (caught) {
-      setError(errorMessage(caught))
-    } finally {
-      setBusy(null)
+  const currentStage = useMemo<StageExecutionSummary | null>(() => {
+    if (!detail?.currentExecutionId || !detail.currentStageCode) return null
+    const mine = myWorkStages.find(stage => stage.id === detail.currentExecutionId)
+    if (mine) return mine
+    return {
+      id: detail.currentExecutionId,
+      iterationId: detail.currentIterationId ?? '',
+      iterationNo: detail.currentIterationNo ?? 1,
+      requestId: detail.id,
+      requestNumber: detail.requestNumber,
+      requestType: detail.requestType,
+      routingUnitId: detail.routingUnitId,
+      routingUnitNameAr: detail.routingUnitNameAr,
+      stageCode: detail.currentStageCode,
+      executionNo: 1,
+      responsibleUnitId: detail.currentResponsibleUnitId ?? '',
+      responsibleUnitName: detail.currentResponsibleUnitName ?? '',
+      responsibleUnitKind: '',
+      status: 'OPEN',
+      workState: detail.currentWorkState ?? 'MANAGER_INBOX',
+      openedAt: detail.createdAt,
+      completedAt: null,
+      // Viewer-relative assignment facts (presentation only; server revalidates):
+      activeAssigneeUserId: null,
+      activeAssigneeDisplayName: null,
+      assignedAt: null
     }
+  }, [detail, myWorkStages, user])
+
+  if (notFound) {
+    return (
+      <EmptyState
+        icon={Inbox}
+        title="الطلب غير متاح"
+        body="الطلب غير موجود أو لا تملك صلاحية الاطلاع عليه."
+        action={{ to: '/requests', label: 'عودة إلى الطلبات' }}
+      />
+    )
+  }
+  if (!detail || !user) {
+    return <p className="loading" role="status">جارٍ تحميل الطلب…</p>
   }
 
-  async function removeCandidate(candidateId: string): Promise<void> {
-    setBusy(`remove-${candidateId}`)
-    setError(null)
-    try {
-      await apiRequest<void>(`/api/workflow/requests/${id}/candidates/${candidateId}`, { method: 'DELETE' })
-      await Promise.all([loadDetail(), loadSupportingData()])
-    } catch (caught) {
-      setError(errorMessage(caught))
-    } finally {
-      setBusy(null)
-    }
-  }
+  const context = user.operationalContext
+  const isHrManager = context !== null && context.unitKind === 'HR' && context.isManager
+  const isManagerOfCurrentUnit = context !== null && context.isManager
+    && detail.currentResponsibleUnitId !== null
+    && context.unitId === detail.currentResponsibleUnitId
 
-  async function saveAuthority(): Promise<void> {
-    if (!selectedAuthority) return
-    setBusy('authority')
-    setError(null)
-    try {
-      setDetail(await apiJson<WorkflowRequestDetail>(`/api/workflow/requests/${id}/authority`, 'PUT', { authorityAssignmentId: selectedAuthority }))
-      await loadSupportingData()
-    } catch (caught) {
-      setError(errorMessage(caught))
-    } finally {
-      setBusy(null)
-    }
-  }
+  const viewerIsAssignee = currentStage !== null && currentStage.activeAssigneeUserId === user.userId
+  const workStateAllowsDomainEdit = detail.currentWorkState !== null
+    && DOMAIN_EDITABLE_WORK_STATES.has(detail.currentWorkState)
+  // Domain-data editors follow the same rule the backend enforces:
+  // unit manager always; the active assignee only before submitting for review.
+  const domainEditorEligible = isManagerOfCurrentUnit || (viewerIsAssignee && workStateAllowsDomainEdit)
 
-  async function addNote(event: React.FormEvent): Promise<void> {
-    event.preventDefault()
-    if (!noteMessage.trim()) return
-    setBusy('note')
-    setError(null)
-    try {
-      const updated = await apiJson<WorkflowNote[]>(`/api/workflow/requests/${id}/notes`, 'POST', {
-        candidateId: noteCandidateId || null, message: noteMessage
-      })
-      setNotes(updated)
-      setNoteMessage('')
-      await loadSupportingData()
-    } catch (caught) {
-      setError(errorMessage(caught))
-    } finally {
-      setBusy(null)
-    }
-  }
+  const canEditCandidates = viewerIsAssignee && detail.status === 'DRAFT'
+    && detail.currentStageCode !== null
+    && INITIAL_STAGE_CODES.has(detail.currentStageCode)
 
-  if (loading) return <div className="loading-panel"><span className="spinner" /> جارٍ تحميل الطلب...</div>
-  if (!detail) return <div className="page-stack"><p className="error" role="alert">{error ?? 'تعذر العثور على الطلب.'}</p><Link className="button button--secondary" to="/">العودة للرئيسية</Link></div>
+  const stageCode = detail.currentStageCode
+  const isPromotion = detail.requestType === 'PROMOTION'
+  const promotionEditable = stageCode === 'P4' && domainEditorEligible
+  const showPromotionReadonly = isPromotion
+    && (stageCode === 'P4O' || stageCode === 'P5' || detail.status === 'COMPLETED')
+    || (stageCode === 'P4' && !promotionEditable && detail.status !== 'DRAFT')
+  const secondmentMode: 'edit-s2' | 'edit-s3' | 'readonly' =
+    stageCode === 'S2' && domainEditorEligible ? 'edit-s2'
+      : stageCode === 'S3' && domainEditorEligible ? 'edit-s3'
+        : 'readonly'
+  const showSecondmentPanel = !isPromotion
+    && ((stageCode !== null && ['S2', 'S3', 'S4', 'S5'].includes(stageCode)) || detail.status === 'COMPLETED')
 
-  return <div className="page-stack request-detail">
-    <header className="page-heading request-heading">
-      <div>
-        <p>الطلبات / {detail.requestType === 'PROMOTION' ? 'ترقية' : 'ندب'}</p>
-        <h1>تفاصيل الطلب</h1>
-        <span className="mono">{detail.requestNumber}</span>
+  return (
+    <div className="request-detail">
+      <header className="card request-header">
+        <div className="request-header__row">
+          <h1>
+            طلب {isPromotion ? 'ترقية' : 'ندب'}
+            <span className="mono request-number">{detail.requestNumber}</span>
+          </h1>
+          <button type="button" className="icon-button" aria-label="تحديث الطلب" title="تحديث الطلب" onClick={() => setRevision(v => v + 1)}>
+            <RefreshCw size={18} />
+          </button>
+        </div>
+        <div className="request-meta">
+          <StatusBadge status={detail.status} />
+          {stageCode && <><StageChip code={stageCode} /><span className="muted">{STAGE_LABELS[stageCode]}</span></>}
+          {detail.currentIterationNo !== null && <span className="muted">التكرار رقم {detail.currentIterationNo}</span>}
+          {detail.currentWorkState && (
+            <>
+              <StatusBadge status={detail.currentWorkState} />
+              <span className="muted">{WORK_STATE_LABELS[detail.currentWorkState]}</span>
+            </>
+          )}
+          <span className="muted">النيابة: {detail.routingUnitNameAr ?? '—'}</span>
+          <span className="muted">الوحدة المسؤولة: {detail.currentResponsibleUnitName ?? '—'}</span>
+          <span className="muted">أُنشئ بواسطة: {detail.createdByUserDisplayName ?? '—'} • {formatDateTime(detail.createdAt)}</span>
+          {viewerIsAssignee && <span className="badge badge--info">هذه المرحلة مسندة إليك</span>}
+        </div>
+        {error && <p className="error" role="alert">{error}</p>}
+        {actionError && <p className="error" role="alert">{actionError}</p>}
+      </header>
+
+      {detail.status === 'REJECTED_PENDING_HR_DECISION' && isHrManager && (
+        <section className="card card--soft hr-decision" aria-label="قرار الموارد البشرية">
+          <h2>{REQUEST_STATUS_LABELS[('REJECTED_PENDING_HR_DECISION') satisfies WorkflowRequestStatus]}</h2>
+          <p className="muted">اختر أحد الإجراءين فقط: إعادة إنشاء التكرار التالي من البداية، أو إلغاء الطلب نهائياً.</p>
+          <div className="stage-actions__group">
+            <button
+              type="button"
+              className="button button--primary"
+              disabled={busy}
+              onClick={() => void runRequestAction(() => workflowApi.restartRequest(detail.id))}
+            >
+              إعادة الإنشاء (تكرار جديد)
+            </button>
+            <button
+              type="button"
+              className="button button--danger"
+              disabled={busy}
+              onClick={() => void runRequestAction(() => workflowApi.cancelRequest(detail.id))}
+            >
+              إلغاء الطلب نهائياً
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* Current stage commands: assign / take / submit / review / approve-or-sign. */}
+      {currentStage !== null && detail.status !== 'REJECTED_PENDING_HR_DECISION' && (
+        <StageActionsPanel
+          stage={currentStage}
+          user={user}
+          onChanged={() => { void reload(); setRevision(v => v + 1) }}
+        />
+      )}
+
+      {/* Promotion decisions: editable only at P4 for eligible editors; read-only evidence elsewhere. */}
+      {(promotionEditable || showPromotionReadonly) && (
+        <PromotionDecisionsPanel
+          requestId={detail.id}
+          stageExecutionId={promotionEditable ? detail.currentExecutionId : null}
+          revision={revision}
+          editable={promotionEditable}
+        />
+      )}
+
+      {/* Secondment preparation/options/selections. */}
+      {showSecondmentPanel && (
+        <SecondmentStagePanel
+          requestId={detail.id}
+          stageExecutionId={secondmentMode === 'readonly' ? null : detail.currentExecutionId}
+          candidates={detail.candidates}
+          revision={revision}
+          mode={secondmentMode}
+        />
+      )}
+
+      <CandidatePanel
+        requestId={detail.id}
+        candidates={detail.candidates}
+        canEdit={canEditCandidates}
+        onChanged={() => { void reload(); setRevision(v => v + 1) }}
+      />
+
+      <DocumentPanel request={detail} />
+
+      <SignoffsView signoffs={signoffs} currentIterationNo={detail.currentIterationNo} requestId={detail.id} />
+
+      <div className="two-column">
+        <NotesPanel
+          requestId={detail.id}
+          candidates={detail.candidates}
+          revision={revision}
+          canWrite
+        />
+        <TimelinePanel requestId={detail.id} revision={revision} />
       </div>
-      <div className="heading-status"><StatusBadge status={detail.status} /><span>المرحلة {detail.currentStage} · الدورة {detail.currentIterationNo}</span></div>
-    </header>
-
-    {error && <p className="error" role="alert">{error}</p>}
-
-    <section className="request-summary-grid">
-      <article><CalendarDays /><span><small>الدورة / النموذج</small><strong>{detail.cycleYear} · {detail.formMonth}/{detail.formYear}</strong></span></article>
-      <article><UsersRound /><span><small>عدد العاملين</small><strong>{detail.candidateCount}</strong></span></article>
-      <article><Building2 /><span><small>وحدة المسار</small><strong>{detail.routingUnit?.nameAr ?? 'تتحدد بعد إضافة أول عامل'}</strong></span></article>
-      <article><ShieldCheck /><span><small>سلطة الاعتماد</small><strong>{detail.approvingAuthority?.displayName ?? 'لم تُحدد'}</strong></span></article>
-    </section>
-
-    {detail.editable && <section className="panel">
-      <div className="panel__header"><div><h2>إضافة عامل</h2><p>البحث مقيد برقم العامل داخل اللقطة السنوية النشطة.</p></div><UserRoundPlus size={23} /></div>
-      <div className="workflow-panel-body">
-        <form className="personnel-search" onSubmit={event => void lookupEmployee(event)}>
-          <label htmlFor="personnel-number">رقم العامل</label>
-          <div><input id="personnel-number" value={personnelNumber} onChange={event => setPersonnelNumber(event.target.value)} maxLength={120} placeholder="أدخل رقم العامل" required /><button className="button button--primary" disabled={busy === 'lookup'}><Search size={18} /> {busy === 'lookup' ? 'جارٍ البحث...' : 'بحث'}</button></div>
-        </form>
-        {employee && <article className="employee-preview">
-          <div className="employee-preview__icon"><UsersRound /></div>
-          <div><strong>{employee.employeeName}</strong><span>رقم العامل <b className="mono">{employee.personnelNumber}</b> · {employee.currentJobTitle ?? 'المسمى غير متاح'}</span><small>{employee.routingUnit.nameAr}{employee.subgroup ? ` · ${employee.subgroup}` : ''}</small><CandidateWarnings candidate={employee} /></div>
-          <button className="button button--primary" type="button" disabled={busy === 'add'} onClick={() => void addEmployee()}><Check size={18} /> إضافة للطلب</button>
-        </article>}
-      </div>
-    </section>}
-
-    <section className="panel">
-      <div className="panel__header"><div><h2>العاملون المرشحون</h2><p>بيانات محفوظة من اللقطة السنوية وقت الإضافة.</p></div><span className="panel-count">{detail.candidates.length}</span></div>
-      {detail.candidates.length === 0 ? <EmptyState icon={UsersRound} title="لم يُضف أي عامل" body="ابحث برقم العامل لإضافته إلى المسودة وتحديد وحدة المسار." /> : <div className="table-scroll"><table className="data-table candidate-table">
-        <thead><tr><th>العامل</th><th>الوظيفة الحالية</th><th>مجموعة فرعية</th><th>تقييم الأداء</th><th>المسار</th>{detail.editable && <th>إجراء</th>}</tr></thead>
-        <tbody>{detail.candidates.map(candidate => <tr key={candidate.id}>
-          <td><strong>{candidate.employeeName}</strong><small className="mono">{candidate.personnelNumber}</small></td>
-          <td>{candidate.currentJobTitle ?? '—'}</td><td>{candidate.subgroup ?? '—'}</td>
-          <td>{candidate.performanceRating ?? 'غير متاح'}<CandidateWarnings candidate={candidate} /></td>
-          <td>{candidate.routingUnitName}</td>
-          {detail.editable && <td><button className="danger-action" type="button" disabled={busy === `remove-${candidate.id}`} onClick={() => void removeCandidate(candidate.id)} aria-label={`إزالة ${candidate.employeeName}`}><Trash2 size={17} /> إزالة</button></td>}
-        </tr>)}</tbody>
-      </table></div>}
-    </section>
-
-    {detail.editable && detail.routingUnit && <section className="panel">
-      <div className="panel__header"><div><h2>سلطة الاعتماد</h2><p>التعيينات النشطة والسارية لوحدة {detail.routingUnit.nameAr} فقط.</p></div><ShieldCheck size={23} /></div>
-      {authorities.length === 0 ? <EmptyState icon={ShieldCheck} title="لا يوجد تعيين سلطة اعتماد" body="هذه حالة تشغيل صحيحة؛ يلزم أن يجهز مسؤول النظام تغطية الوحدة قبل إمكان استكمال الإرسال لاحقاً." /> : <div className="workflow-panel-body authority-options">
-        {authorities.map(option => <label key={option.id} className={selectedAuthority === option.id ? 'authority-card authority-card--selected' : 'authority-card'}>
-          <input type="radio" name="authority" checked={selectedAuthority === option.id} onChange={() => setSelectedAuthority(option.id)} />
-          <span><strong>{option.displayName}</strong><small>{option.authorityJobTitle} · {option.authorityKind === 'PRIMARY' ? 'أساسي' : 'مفوّض'}{option.preferred ? ' · مفضل' : ''}</small></span>
-          {selectedAuthority === option.id && <Check size={20} />}
-        </label>)}
-        <div className="form-actions form-actions--inline"><button type="button" className="button button--primary" disabled={!selectedAuthority || busy === 'authority'} onClick={() => void saveAuthority()}>{busy === 'authority' ? 'جارٍ الحفظ...' : 'حفظ سلطة الاعتماد'}</button></div>
-      </div>}
-    </section>}
-
-    <SignoffPanel detail={detail} onChanged={loadSupportingData} />
-    <DocumentPanel detail={detail} />
-    {detail.requestType === 'SECONDMENT' && <SecondmentWorkflowPanel detail={detail} />}
-    {detail.requestType === 'PROMOTION' && <PromotionWorkflowPanel detail={detail} />}
-    <WorkflowControlsPanel detail={detail} />
-
-    <div className="detail-columns">
-      <section className="panel">
-        <div className="panel__header"><div><h2>الملاحظات</h2><p>سجل إضافي لا يقبل التعديل أو الحذف.</p></div><MessageSquarePlus size={22} /></div>
-        <form className="note-form" onSubmit={event => void addNote(event)}>
-          <label>نطاق الملاحظة<select value={noteCandidateId} onChange={event => setNoteCandidateId(event.target.value)}><option value="">الطلب بالكامل</option>{detail.candidates.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.employeeName}</option>)}</select></label>
-          <label>نص الملاحظة<textarea value={noteMessage} onChange={event => setNoteMessage(event.target.value)} maxLength={2000} rows={3} required placeholder="اكتب ملاحظة واضحة..." /></label>
-          <button className="button button--primary" disabled={busy === 'note'}>{busy === 'note' ? 'جارٍ الإضافة...' : 'إضافة الملاحظة'}</button>
-        </form>
-        <div className="compact-feed">{notes.length === 0 ? <p className="feed-empty">لا توجد ملاحظات حتى الآن.</p> : notes.map(note => <article key={note.id}><span className="feed-icon"><FileText size={17} /></span><div><strong>{note.authorName}</strong><small>{roleLabels[note.authorRole] ?? note.authorRole} · {note.stageCode ?? '—'}{note.candidateId ? ` · ${candidateNames.get(note.candidateId) ?? 'عامل'}` : ''}</small><p>{note.message}</p><time>{formatDate(note.createdAt)}</time></div></article>)}</div>
-      </section>
-
-      <section className="panel">
-        <div className="panel__header"><div><h2>الخط الزمني</h2><p>الأحداث مرتبة زمنياً ومحفوظة كأدلة.</p></div><Clock3 size={22} /></div>
-        <div className="timeline-feed">{timeline.length === 0 ? <p className="feed-empty">لا توجد أحداث.</p> : timeline.map(entry => <article key={`${entry.kind}-${entry.id}`}><span className="timeline-feed__line" /><span className="feed-icon"><ClipboardList size={17} /></span><div><strong>{entry.kind === 'NOTE' ? 'ملاحظة' : (actionLabels[entry.code] ?? entry.code)}</strong><small>{entry.actorName} · {roleLabels[entry.actorRole] ?? entry.actorRole}{entry.stageCode ? ` · ${entry.stageCode}` : ''}</small>{entry.message && <p>{entry.message}</p>}<time>{formatDate(entry.createdAt)}</time></div></article>)}</div>
-      </section>
     </div>
-  </div>
+  )
 }

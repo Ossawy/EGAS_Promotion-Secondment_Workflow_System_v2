@@ -92,6 +92,7 @@ beforeEach(async () => {
   db.public.registerFunction({ name: 'pg_advisory_xact_lock', args: [DataType.integer], returns: DataType.integer, implementation: () => 1 })
 
   db.public.none(await readFile(new URL('../src/db/migrations/001_initial_v5_schema.sql', import.meta.url), 'utf8'))
+  db.public.none(await readFile(new URL('../src/db/migrations/005_audit_identity_snapshots.sql', import.meta.url), 'utf8'))
   db.public.none(await readFile(new URL('../src/db/migrations/002_phase2_annual_data_integrity.sql', import.meta.url), 'utf8'))
   db.public.none(await readFile(new URL('../src/db/migrations/003_phase3_workflow_indexes.sql', import.meta.url), 'utf8'))
 
