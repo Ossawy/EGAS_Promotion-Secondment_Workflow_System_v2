@@ -3,6 +3,7 @@ import { closePool, getPool } from '../db/pool.js'
 import { loadMigrations } from '../db/migration-runner.js'
 import { findActiveAdminAccounts } from '../db/repositories/pilot-repository.js'
 import { runCli } from '../shared/run-cli.js'
+import { pathToFileURL } from 'node:url'
 
 type CheckResult = { check: string; ok: boolean; detail: string }
 
@@ -78,4 +79,6 @@ async function main(): Promise<void> {
   if (results.some(result => !result.ok)) process.exitCode = 1
 }
 
-await runCli(main, closePool, 'Pilot preflight failed')
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  await runCli(main, closePool, 'Pilot preflight failed')
+}

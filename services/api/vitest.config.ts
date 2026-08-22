@@ -10,6 +10,7 @@ export default defineConfig({
     'test/phase5-*.test.ts',
     'test/phase6-*.test.ts',
     'test/phase7-*.test.ts',
+    'test/dev-*.test.mjs',
     'test/config.test.ts'
 ],
     environment: 'node',

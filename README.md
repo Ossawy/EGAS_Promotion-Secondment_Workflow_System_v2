@@ -2,6 +2,22 @@
 
 Active repository for the **v5 redesign** of the EGAS Promotion & Secondment Workflow System.
 
+## Local development quick start
+
+Prerequisites: Git, Node.js 22 LTS (or a supported newer release), and PostgreSQL 14+ running locally. Docker is not used.
+
+```bash
+git clone https://github.com/Ossawy/EGAS_Promotion-Secondment_Workflow_System_v2.git
+cd EGAS_Promotion-Secondment_Workflow_System_v2
+npm ci
+npm run dev:setup
+npm run dev:all
+```
+
+Open <http://localhost:5173>. On first setup, PostgreSQL administrative credentials are requested only to create the dedicated local database and roles; the password is hidden and never saved. Synthetic application logins are written to the ignored `.egas-local/DEV_ACCOUNTS.txt` file.
+
+Daily startup requires only `npm run dev:all`. See [Local Development](docs/LOCAL_DEVELOPMENT.md) for migration, reseeding, troubleshooting, and removal instructions.
+
 This repository was created from the last working pre-v5 implementation so proven technical infrastructure can be reused. The copied implementation is **not** the authority for current workflow behavior. Development from this point forward follows the v5.2 requirements and implementation blueprint.
 
 ## Current project status
@@ -316,17 +332,7 @@ ApprovingAuthorityAssignment/AuthorityDelegation as manager authority
 old migration 001-007 chain as v5 database authority
 ```
 
-## Prerequisites
-
-- Node.js 22+
-- npm
-- PostgreSQL for database-backed development and integration testing
-
-Never commit `services/api/.env` or any other secret file.
-
-`.env.example` may still require Phase 1 cleanup if it contains copied pre-v5 configuration wording. Use it only after checking the current phase documentation.
-
-## Install and quality commands
+## Quality commands
 
 From the repository root:
 
@@ -339,16 +345,7 @@ npm run security:check
 npm audit
 ```
 
-Available development commands inherited from the working codebase include:
-
-```bash
-npm run dev       # API watch mode
-npm run dev:web   # Vite frontend
-```
-
-Database and data commands such as `npm run db:migrate`, `admin:bootstrap`, or annual-data commands must be used only when the current v5 phase documentation says the underlying schema/API is ready.
-
-**Before Phase 1 completes, do not run the copied old migration chain against a new v5 database.**
+`npm run dev:migrate` applies migrations with the ignored local owner credentials. The normal application and `npm run dev:all` always use the restricted runtime role. `npm run db:migrate` remains the explicit operator command for non-local environments.
 
 ## Development process
 
