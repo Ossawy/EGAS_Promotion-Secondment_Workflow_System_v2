@@ -68,11 +68,11 @@ export async function migrateDatabase(pool: Pool): Promise<Array<{ version: stri
     await client.query('BEGIN')
     await client.query("SELECT pg_advisory_xact_lock(hashtext('egas_schema_migrations'))")
     const legacy = await client.query<{ legacy: boolean, current: boolean }>(
-      `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='egas_useraccount') AS legacy,
+      `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'egas!_%' ESCAPE '!') AS legacy,
              EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='schema_migration') AS current`
     )
     const state = legacy.rows[0]
-    if (state?.legacy) throw new Error('An obsolete v5 table exists; migration requires a separate empty database')
+    if (state?.legacy) throw new Error('A pre-v5 egas_* schema exists; migration requires a separate empty database')
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migration (
       version text PRIMARY KEY,
       sha256 char(64) NOT NULL,

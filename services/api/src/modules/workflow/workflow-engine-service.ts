@@ -31,8 +31,10 @@ import {
   type AddCandidateInput,
   type AddNoteInput,
   type AssignStageInput,
+  type CandidateLookupPreview,
   type CreateRequestInput,
   type InternalCorrectionInput,
+  type ManagerSubordinateSummary,
   type NotificationSummary,
   type RejectStageInput,
   type RequestCandidateSummary,
@@ -43,7 +45,8 @@ import {
   type TimelineEvent,
   type WorkflowNoteSummary,
   type WorkflowRequestContext,
-  type WorkflowRequestSummary
+  type WorkflowRequestSummary,
+  type WorkflowSignoffView
 } from './workflow-types.ts'
 
 type RequestRow = {
@@ -91,6 +94,20 @@ type StageRow = {
   activeAssigneeDisplayName: string | null
   assignedAt: string | null
 }
+
+const TIMELINE_ACTION_LABELS:Record<string,string>={
+  REQUEST_CREATED:'إنشاء الطلب وبدء التحضير',STAGE_ASSIGNED:'إسناد المرحلة إلى موظف',
+  STAGE_TAKEN_BY_MANAGER:'تولى المدير العمل بنفسه',STAGE_SUBMITTED_TO_MANAGER:'رفع العمل إلى المدير للمراجعة',
+  INTERNAL_CORRECTION_REQUESTED:'إعادة العمل للموظف للتصحيح',STAGE_RETURNED_TO_PREVIOUS:'إرجاع الطلب إلى مدير المرحلة السابقة',
+  STAGE_REJECTED:'رفض الطلب وإحالته إلى مدير الموارد البشرية',REQUEST_RESTARTED:'إعادة بدء الطلب في تكرار جديد',
+  STAGE_COMPLETED:'إكمال المرحلة',STAGE_ADVANCED:'اعتماد المرحلة والانتقال للمرحلة التالية',
+  STAGE_SIGNED_AND_ADVANCED:'توقيع المرحلة والانتقال للمرحلة التالية',PROMOTION_DECISION_SAVED:'حفظ قرار الترقية',
+  SECONDMENT_PREPARATION_SAVED:'حفظ بيانات الندب',SECONDMENT_OPTION_ADDED:'إضافة وظيفة مقترحة للندب',
+  SECONDMENT_OPTION_UPDATED:'تعديل وظيفة مقترحة للندب',SECONDMENT_OPTION_REMOVED:'حذف وظيفة مقترحة للندب',
+  SECONDMENT_SELECTION_SAVED:'اعتماد وظيفة الندب'
+}
+
+const TIMELINE_STAGE_STATUS_LABELS:Record<string,string>={COMPLETED:'اكتملت',RETURNED:'أُرجعت',REJECTED:'رُفضت',OPEN:'فُتحت'}
 
 async function insertNotification(
   db: Queryable,
@@ -149,7 +166,6 @@ export class WorkflowEngineService {
 
     return await withTransaction(this.pool, async db => {
       await requireOperationalUser(db, actor.userId)
-      await requireCurrentHrManager(db, actor.userId)
 
       const routingUnitResult = await db.query<{ id: string, nameAr: string }>(
         `SELECT id, name_ar AS "nameAr" FROM routing_unit WHERE id = $1 AND is_active = TRUE`,
@@ -161,6 +177,7 @@ export class WorkflowEngineService {
 
       const initialStageCode: StageCode = input.requestType === 'PROMOTION' ? 'P1' : 'S1'
       const hrUnit = await resolveResponsibleOperationalUnit(db, initialStageCode, routingUnitId)
+      await requireUnitMember(db, actor.userId, hrUnit.id)
 
       const requestId = randomUUID()
       const requestNumber = requestId
@@ -187,8 +204,16 @@ export class WorkflowEngineService {
       await db.query(
         `INSERT INTO stage_execution
           (id, iteration_id, stage_code, execution_no, responsible_unit_id, status, work_state, opened_at)
-         VALUES ($1, $2, $3, 1, $4, 'OPEN', 'MANAGER_INBOX', CURRENT_TIMESTAMP)`,
+         VALUES ($1, $2, $3, 1, $4, 'OPEN', 'IN_PROGRESS', CURRENT_TIMESTAMP)`,
         [stageExecutionId, iterationId, initialStageCode, hrUnit.id]
+      )
+
+      // The HR creator owns initial P1/S1 preparation as the first active assignee.
+      await db.query(
+        `INSERT INTO work_assignment
+          (id, stage_execution_id, assigned_by_user_id, assigned_to_user_id, assigned_at)
+         VALUES ($1, $2, $3, $3, CURRENT_TIMESTAMP)`,
+        [randomUUID(), stageExecutionId, actor.userId]
       )
 
       // 4. Wire current_iteration_id and current_stage_code now that both rows exist
@@ -214,7 +239,7 @@ export class WorkflowEngineService {
         details: { requestType: input.requestType, routingUnitId, initialStageCode }
       })
 
-      await insertNotification(db, actor.userId, 'STAGE_INBOX_ARRIVED', requestId, stageExecutionId)
+      await insertNotification(db, actor.userId, 'STAGE_ASSIGNED', requestId, stageExecutionId)
 
       return await this.getRequestById(db, requestId)
     })
@@ -234,46 +259,11 @@ export class WorkflowEngineService {
 
     return await withTransaction(this.pool, async db => {
       await requireOperationalUser(db, actor.userId)
-      await requireCurrentHrManager(db, actor.userId)
 
-      const requestResult = await db.query<{ id: string, routingUnitId: string | null, status: string, currentStageCode: string }>(
-        `SELECT id, routing_unit_id AS "routingUnitId", status, current_stage_code AS "currentStageCode"
-           FROM workflow_request WHERE id = $1 FOR UPDATE`,
-        [requestId]
-      )
-      const request = requestResult.rows[0]
-      if (!request) throw new AppError(404, 'Workflow request not found', 'REQUEST_NOT_FOUND')
-      if (request.status !== 'DRAFT') {
-        throw new AppError(409, 'Candidates can only be added when request is in DRAFT status', 'REQUEST_NOT_DRAFT')
-      }
-      if (request.currentStageCode !== 'P1' && request.currentStageCode !== 'S1') {
-        throw new AppError(409, 'Candidates can only be added during initial P1/S1 preparation', 'STAGE_NOT_INITIAL')
-      }
+      const request = await this.loadDraftInitialRequest(db, requestId, { lock: true })
+      await this.requireInitialDraftAssignee(db, requestId, actor.userId)
 
-      // Resolve from latest ACTIVATED annual snapshot
-      const snapshotResult = await db.query<{
-        id: string
-        employeeId: string
-        snapshotYear: number
-        personnelNumber: string
-        routingUnitId: string | null
-        employeeData: Record<string, unknown>
-      }>(
-        `SELECT s.id, s.employee_id AS "employeeId", s.snapshot_year AS "snapshotYear",
-                s.personnel_number AS "personnelNumber", s.routing_unit_id AS "routingUnitId",
-                s.employee_data AS "employeeData"
-           FROM employee_annual_snapshot s
-           JOIN import_batch b ON b.id = s.import_batch_id
-          WHERE s.personnel_number = $1
-            AND b.status = 'ACTIVATED'
-          ORDER BY s.snapshot_year DESC
-          LIMIT 1`,
-        [personnelNumber]
-      )
-      const snapshot = snapshotResult.rows[0]
-      if (!snapshot) {
-        throw new AppError(404, `Employee ${personnelNumber} not found in an active annual snapshot`, 'EMPLOYEE_NOT_FOUND')
-      }
+      const snapshot = await this.resolveActivatedEmployeeSnapshot(db, personnelNumber)
       if (!snapshot.routingUnitId || snapshot.routingUnitId !== request.routingUnitId) {
         throw new AppError(409, 'Employee routing unit does not match request routing unit', 'CANDIDATE_ROUTING_MISMATCH')
       }
@@ -317,6 +307,137 @@ export class WorkflowEngineService {
     })
   }
 
+  /**
+   * Phase 7 read-only preview for HR candidate preparation.
+   * Uses exactly the same authorization and annual-snapshot resolution semantics as
+   * addCandidate; performs no mutation and creates no RequestCandidate/WorkAssignment.
+   */
+  async lookupCandidatePreview(
+    requestIdValue: unknown,
+    personnelNumberValue: unknown,
+    actor: WorkflowRequestContext
+  ): Promise<CandidateLookupPreview> {
+    const requestId = uuid(requestIdValue, 'requestId')
+    const personnelNumber = typeof personnelNumberValue === 'string' ? personnelNumberValue.trim() : ''
+    if (!personnelNumber) {
+      throw new AppError(400, 'personnelNumber is required', 'PERSONNEL_NUMBER_REQUIRED')
+    }
+
+    await requireOperationalUser(this.pool, actor.userId)
+
+    const request = await this.loadDraftInitialRequest(this.pool, requestId, { lock: false })
+    await this.requireInitialDraftAssignee(this.pool, requestId, actor.userId)
+
+    const snapshot = await this.resolveActivatedEmployeeSnapshot(this.pool, personnelNumber)
+    if (!snapshot.routingUnitId || snapshot.routingUnitId !== request.routingUnitId) {
+      throw new AppError(409, 'Employee routing unit does not match request routing unit', 'CANDIDATE_ROUTING_MISMATCH')
+    }
+
+    const data = snapshot.employeeData ?? {}
+    return {
+      snapshotId: snapshot.id,
+      personnelNumber: snapshot.personnelNumber,
+      snapshotYear: Number(snapshot.snapshotYear),
+      routingUnitMatchesRequest: true,
+      alreadyAddedToRequest: Boolean(
+        (
+          await this.pool.query(
+            `SELECT 1 FROM request_candidate WHERE request_id = $1 AND employee_snapshot_id = $2`,
+            [requestId, snapshot.id]
+          )
+        ).rows[0]
+      ),
+      employeeName: String(data.employeeName ?? ''),
+      currentJobTitle: (data.currentJobTitle as string) ?? null,
+      frozenData: snapshot.employeeData
+    }
+  }
+
+  /**
+   * Shared draft/P1/S1 request gate used by candidate add and lookup so both paths
+   * cannot diverge. Caller decides whether the row must be locked FOR UPDATE.
+   */
+  private async loadDraftInitialRequest(
+    db: Queryable,
+    requestId: string,
+    options: { lock: boolean }
+  ): Promise<{ id: string, routingUnitId: string | null, status: string, currentStageCode: string }> {
+    const requestResult = await db.query<{ id: string, routingUnitId: string | null, status: string, currentStageCode: string }>(
+      `SELECT id, routing_unit_id AS "routingUnitId", status, current_stage_code AS "currentStageCode"
+         FROM workflow_request WHERE id = $1${options.lock ? ' FOR UPDATE' : ''}`,
+      [requestId]
+    )
+    const request = requestResult.rows[0]
+    if (!request) throw new AppError(404, 'Workflow request not found', 'REQUEST_NOT_FOUND')
+    if (request.status !== 'DRAFT') {
+      throw new AppError(409, 'Candidates can only be managed when request is in DRAFT status', 'REQUEST_NOT_DRAFT')
+    }
+    if (request.currentStageCode !== 'P1' && request.currentStageCode !== 'S1') {
+      throw new AppError(409, 'Candidates can only be managed during initial P1/S1 preparation', 'STAGE_NOT_INITIAL')
+    }
+    return request
+  }
+
+  private async requireInitialDraftAssignee(db: Queryable, requestId: string, userId: string): Promise<void> {
+    const result = await db.query(
+      `SELECT 1
+         FROM workflow_request wr
+         JOIN stage_execution se
+           ON se.iteration_id = wr.current_iteration_id
+          AND se.stage_code = wr.current_stage_code
+          AND se.status = 'OPEN'
+         JOIN work_assignment wa
+           ON wa.stage_execution_id = se.id
+          AND wa.ended_at IS NULL
+        WHERE wr.id = $1
+          AND wr.status = 'DRAFT'
+          AND wr.current_stage_code IN ('P1', 'S1')
+          AND wa.assigned_to_user_id = $2`,
+      [requestId, userId]
+    )
+    if (!result.rows[0]) {
+      throw new AppError(403, 'Only the active initial-stage assignee may prepare request candidates', 'NOT_ACTIVE_ASSIGNEE')
+    }
+  }
+
+  /** Latest ACTIVATED annual snapshot resolution shared by candidate preview/add. */
+  private async resolveActivatedEmployeeSnapshot(
+    db: Queryable,
+    personnelNumber: string
+  ): Promise<{
+    id: string
+    employeeId: string
+    snapshotYear: number
+    personnelNumber: string
+    routingUnitId: string | null
+    employeeData: Record<string, unknown>
+  }> {
+    const snapshotResult = await db.query<{
+      id: string
+      employeeId: string
+      snapshotYear: number
+      personnelNumber: string
+      routingUnitId: string | null
+      employeeData: Record<string, unknown>
+    }>(
+      `SELECT s.id, s.employee_id AS "employeeId", s.snapshot_year AS "snapshotYear",
+              s.personnel_number AS "personnelNumber", s.routing_unit_id AS "routingUnitId",
+              s.employee_data AS "employeeData"
+         FROM employee_annual_snapshot s
+         JOIN import_batch b ON b.id = s.import_batch_id
+        WHERE s.personnel_number = $1
+          AND b.status = 'ACTIVATED'
+        ORDER BY s.snapshot_year DESC
+        LIMIT 1`,
+      [personnelNumber]
+    )
+    const snapshot = snapshotResult.rows[0]
+    if (!snapshot) {
+      throw new AppError(404, `Employee ${personnelNumber} not found in an active annual snapshot`, 'EMPLOYEE_NOT_FOUND')
+    }
+    return snapshot
+  }
+
   async removeCandidate(
     requestIdValue: unknown,
     candidateIdValue: unknown,
@@ -327,21 +448,8 @@ export class WorkflowEngineService {
 
     await withTransaction(this.pool, async db => {
       await requireOperationalUser(db, actor.userId)
-      await requireCurrentHrManager(db, actor.userId)
-
-      const requestResult = await db.query<{ id: string, status: string, currentStageCode: string }>(
-        `SELECT id, status, current_stage_code AS "currentStageCode"
-           FROM workflow_request WHERE id = $1 FOR UPDATE`,
-        [requestId]
-      )
-      const request = requestResult.rows[0]
-      if (!request) throw new AppError(404, 'Workflow request not found', 'REQUEST_NOT_FOUND')
-      if (request.status !== 'DRAFT') {
-        throw new AppError(409, 'Candidates can only be removed when request is in DRAFT status', 'REQUEST_NOT_DRAFT')
-      }
-      if (request.currentStageCode !== 'P1' && request.currentStageCode !== 'S1') {
-        throw new AppError(409, 'Candidates can only be removed during initial P1/S1 preparation', 'STAGE_NOT_INITIAL')
-      }
+      await this.loadDraftInitialRequest(db, requestId, { lock: true })
+      await this.requireInitialDraftAssignee(db, requestId, actor.userId)
 
       const deleteResult = await db.query(
         `DELETE FROM request_candidate WHERE id = $1 AND request_id = $2`,
@@ -539,6 +647,12 @@ export class WorkflowEngineService {
     if (!reason) {
       throw new AppError(400, 'Reason is required for internal correction', 'REASON_REQUIRED')
     }
+    if (input.managerHandlesPersonally !== undefined && typeof input.managerHandlesPersonally !== 'boolean') {
+      throw new AppError(400, 'managerHandlesPersonally must be boolean', 'INVALID_CORRECTION_ASSIGNEE')
+    }
+    if (input.managerHandlesPersonally && input.assignedToUserId !== undefined) {
+      throw new AppError(400, 'Choose either an employee or manager self-work, not both', 'INVALID_CORRECTION_ASSIGNEE')
+    }
 
     return await withTransaction(this.pool, async db => {
       await requireOperationalUser(db, actor.userId)
@@ -551,7 +665,7 @@ export class WorkflowEngineService {
         throw new AppError(409, 'Internal correction can only be requested when stage is in MANAGER_REVIEW', 'INVALID_WORK_STATE')
       }
 
-      // Must have an active subordinate assignment
+      // Preserve the previous assignee, then explicitly resolve the correction owner.
       const assignmentResult = await db.query<{ assignedToUserId: string }>(
         `SELECT assigned_to_user_id AS "assignedToUserId"
            FROM work_assignment
@@ -559,28 +673,64 @@ export class WorkflowEngineService {
         [stageExecutionId]
       )
       const activeAssignment = assignmentResult.rows[0]
-      if (!activeAssignment || activeAssignment.assignedToUserId === actor.userId) {
-        throw new AppError(409, 'Internal correction requires an active subordinate assignee', 'NO_SUBORDINATE_ASSIGNEE')
+      if (!activeAssignment) {
+        throw new AppError(409, 'Internal correction requires an active assignment', 'NO_ACTIVE_ASSIGNEE')
+      }
+
+      const correctionAssigneeUserId = input.managerHandlesPersonally
+        ? actor.userId
+        : input.assignedToUserId !== undefined
+          ? uuid(input.assignedToUserId, 'assignedToUserId')
+          : activeAssignment.assignedToUserId
+      await requireUnitMember(db, correctionAssigneeUserId, stageExecution.responsibleUnitId)
+
+      if (correctionAssigneeUserId !== activeAssignment.assignedToUserId) {
+        await db.query(
+          `UPDATE work_assignment
+              SET ended_at = CURRENT_TIMESTAMP,
+                  end_reason = 'INTERNAL_CORRECTION_REASSIGNED'
+            WHERE stage_execution_id = $1 AND ended_at IS NULL`,
+          [stageExecutionId]
+        )
+        await db.query(
+          `INSERT INTO work_assignment
+            (id, stage_execution_id, assigned_by_user_id, assigned_to_user_id, assigned_at)
+           VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+          [randomUUID(), stageExecutionId, actor.userId, correctionAssigneeUserId]
+        )
       }
 
       await db.query(
-        `UPDATE stage_execution SET work_state = 'CORRECTION_REQUIRED' WHERE id = $1`,
-        [stageExecutionId]
+        `UPDATE stage_execution SET work_state = $2 WHERE id = $1`,
+        [stageExecutionId, input.managerHandlesPersonally ? 'IN_PROGRESS' : 'CORRECTION_REQUIRED']
       )
 
-      await insertStageAction(db, stageExecutionId, actor.userId, stageExecution.responsibleUnitId, 'INTERNAL_CORRECTION_REQUESTED', reason)
+      const correctionEvidence = {
+        previousAssigneeUserId: activeAssignment.assignedToUserId,
+        correctionAssigneeUserId,
+        managerHandledPersonally: input.managerHandlesPersonally === true
+      }
+      await insertStageAction(
+        db,
+        stageExecutionId,
+        actor.userId,
+        stageExecution.responsibleUnitId,
+        'INTERNAL_CORRECTION_REQUESTED',
+        reason,
+        correctionEvidence
+      )
 
       await recordAuditEvent(db, {
         actorUserId: actor.userId,
         eventType: 'INTERNAL_CORRECTION_REQUESTED',
         subjectType: 'stage_execution',
         subjectId: stageExecutionId,
-        details: { reason, assigneeUserId: activeAssignment.assignedToUserId }
+        details: { reason, ...correctionEvidence }
       })
 
       await insertNotification(
         db,
-        activeAssignment.assignedToUserId,
+        correctionAssigneeUserId,
         'CORRECTION_REQUIRED',
         request.id,
         stageExecutionId
@@ -1879,14 +2029,14 @@ export class WorkflowEngineService {
         kind: 'REQUEST_STATUS',
         id: `${requestId}-created`,
         timestamp: new Date(reqInfo.rows[0].createdAt).toISOString(),
-        title: 'Workflow Request Created'
+        title: 'إنشاء طلب سير عمل جديد'
       })
       if (reqInfo.rows[0].cancelledAt) {
         events.push({
           kind: 'REQUEST_STATUS',
           id: `${requestId}-cancelled`,
           timestamp: new Date(reqInfo.rows[0].cancelledAt).toISOString(),
-          title: 'Workflow Request Cancelled'
+          title: 'إلغاء الطلب نهائياً'
         })
       }
     }
@@ -1902,7 +2052,7 @@ export class WorkflowEngineService {
         kind: 'ITERATION',
         id: iter.id,
         timestamp: new Date(iter.startedAt).toISOString(),
-        title: `Workflow Iteration ${iter.iterationNo} Started`,
+        title: `بدء التكرار رقم ${iter.iterationNo}`,
         details: { iterationNo: iter.iterationNo, status: iter.status }
       })
       if (iter.endedAt && iter.status === 'REJECTED') {
@@ -1910,7 +2060,7 @@ export class WorkflowEngineService {
           kind: 'ITERATION',
           id: `${iter.id}-rejected`,
           timestamp: new Date(iter.endedAt).toISOString(),
-          title: `Workflow Iteration ${iter.iterationNo} Rejected`,
+          title: `رفض التكرار رقم ${iter.iterationNo}`,
           details: { iterationNo: iter.iterationNo, rejectionReason: iter.rejectionReason }
         })
       }
@@ -1941,7 +2091,7 @@ export class WorkflowEngineService {
         kind: 'STAGE_EXECUTION',
         id: `${se.id}-opened`,
         timestamp: new Date(se.openedAt).toISOString(),
-        title: `Stage ${se.stageCode} (Exec ${se.executionNo}) Opened`,
+        title: `فتح المرحلة ${se.stageCode} — تنفيذ رقم ${se.executionNo}${se.unitName?` — ${se.unitName}`:''}`,
         details: { stageCode: se.stageCode, executionNo: se.executionNo, unitName: se.unitName, status: 'OPEN' }
       })
       if (se.completedAt) {
@@ -1949,7 +2099,7 @@ export class WorkflowEngineService {
           kind: 'STAGE_EXECUTION',
           id: `${se.id}-ended`,
           timestamp: new Date(se.completedAt).toISOString(),
-          title: `Stage ${se.stageCode} (Exec ${se.executionNo}) ${se.status}`,
+          title: `${TIMELINE_STAGE_STATUS_LABELS[se.status]??'أُغلقت'} المرحلة ${se.stageCode} — تنفيذ رقم ${se.executionNo}`,
           details: { stageCode: se.stageCode, executionNo: se.executionNo, unitName: se.unitName, status: se.status }
         })
       }
@@ -1984,7 +2134,7 @@ export class WorkflowEngineService {
         kind: 'WORK_ASSIGNMENT',
         id: `${wa.id}-created`,
         timestamp: new Date(wa.assignedAt).toISOString(),
-        title: `Work assigned to ${wa.assignedToDisplayName} (${wa.stageCode})`,
+        title: `إسناد عمل المرحلة ${wa.stageCode} إلى ${wa.assignedToDisplayName}`,
         actorDisplayName: wa.assignedByDisplayName,
         details: { assignedTo: wa.assignedToDisplayName, stageCode: wa.stageCode }
       })
@@ -1993,7 +2143,7 @@ export class WorkflowEngineService {
           kind: 'WORK_ASSIGNMENT',
           id: `${wa.id}-ended`,
           timestamp: new Date(wa.endedAt).toISOString(),
-          title: `Work assignment ended for ${wa.assignedToDisplayName} (${wa.stageCode})`,
+          title: `انتهاء إسناد ${wa.assignedToDisplayName} في المرحلة ${wa.stageCode}`,
           details: { assignedTo: wa.assignedToDisplayName, stageCode: wa.stageCode, endReason: wa.endReason }
         })
       }
@@ -2030,7 +2180,7 @@ export class WorkflowEngineService {
         kind: 'STAGE_ACTION',
         id: act.id,
         timestamp: new Date(act.createdAt).toISOString(),
-        title: `${act.actionType} (${act.stageCode})`,
+        title: `${TIMELINE_ACTION_LABELS[act.actionType]??'إجراء مسجل'} — المرحلة ${act.stageCode}`,
         actorDisplayName: act.actorDisplayName,
         actorUserId: act.actorUserId,
         details: { stageCode: act.stageCode, executionNo: act.executionNo, unitName: act.unitName, reason: act.reason, ...act.payload }
@@ -2042,11 +2192,10 @@ export class WorkflowEngineService {
       id: string
       stageCode: string
       executionNo: number
-      sha256: string
       createdAt: string
     }>(
       `SELECT sn.id, se.stage_code AS "stageCode", se.execution_no AS "executionNo",
-              sn.sha256, sn.created_at AS "createdAt"
+              sn.created_at AS "createdAt"
          FROM stage_submission_snapshot sn
          JOIN stage_execution se ON se.id = sn.stage_execution_id
          JOIN workflow_iteration wi ON wi.id = se.iteration_id
@@ -2059,8 +2208,8 @@ export class WorkflowEngineService {
         kind: 'SUBMISSION_SNAPSHOT',
         id: sn.id,
         timestamp: new Date(sn.createdAt).toISOString(),
-        title: `Submission snapshot frozen for Stage ${sn.stageCode} (Exec ${sn.executionNo})`,
-        details: { stageCode: sn.stageCode, executionNo: sn.executionNo, sha256: sn.sha256 }
+        title: `تجميد إثبات اعتماد المرحلة ${sn.stageCode} — تنفيذ رقم ${sn.executionNo}`,
+        details: { stageCode: sn.stageCode, executionNo: sn.executionNo }
       })
     }
 
@@ -2071,7 +2220,7 @@ export class WorkflowEngineService {
         kind: 'NOTE',
         id: note.id,
         timestamp: note.createdAt,
-        title: `Note added by ${note.authorDisplayName}`,
+        title: `إضافة ملاحظة بواسطة ${note.authorDisplayName}`,
         actorDisplayName: note.authorDisplayName,
         actorUserId: note.authorUserId,
         details: { body: note.body, stageCode: note.stageCode, unitName: note.unitName }
@@ -2145,9 +2294,209 @@ export class WorkflowEngineService {
     }
 
     return {
-      stages: stagesResult.rows.map(r => this.mapStageSummary(r)),
-      rejectedRequests
+      stages: await this.attachCorrectionEvidence(
+        this.pool,
+        await this.attachPreviousWorkerSuggestions(this.pool, stagesResult.rows.map(r => this.mapStageSummary(r)))
+      ),
+      rejectedRequests: rejectedRequests
     }
+  }
+
+  /**
+   * Phase 7 presentation-only suggestion for returned stages. Derives the most recent
+   * worker of the prior execution of the same business stage within the same iteration
+   * and suggests them only while they remain an active OPERATIONAL member of the current
+   * responsible unit. Never creates a WorkAssignment; assign stays authoritative.
+   */
+  private async attachPreviousWorkerSuggestions(
+    db: Queryable,
+    stages: StageExecutionSummary[]
+  ): Promise<StageExecutionSummary[]> {
+    for (const stage of stages) {
+      const workerResult = await db.query<{ userId: string }>(
+        `SELECT w.assigned_to_user_id AS "userId"
+           FROM work_assignment w
+           JOIN stage_execution prev ON prev.id = w.stage_execution_id
+          WHERE prev.iteration_id = $1
+            AND prev.stage_code = $2
+            AND prev.id <> $3
+            AND prev.status <> 'OPEN'
+          ORDER BY w.assigned_at DESC, w.id DESC
+          LIMIT 1`,
+        [stage.iterationId, stage.stageCode, stage.id]
+      )
+      const priorWorkerUserId = workerResult.rows[0]?.userId
+
+      let suggestedUserId: string | null = null
+      let suggestedDisplayName: string | null = null
+      if (priorWorkerUserId) {
+        const eligible = await db.query<{ displayName: string }>(
+          `SELECT a.display_name AS "displayName"
+             FROM user_account a
+             JOIN user_unit_membership m
+               ON m.user_id = a.id
+              AND m.unit_id = $2
+              AND m.effective_to IS NULL
+            WHERE a.id = $1
+              AND a.is_active = TRUE
+              AND a.account_type = 'OPERATIONAL'
+            LIMIT 1`,
+          [priorWorkerUserId, stage.responsibleUnitId]
+        )
+        if (eligible.rows[0]) {
+          suggestedUserId = priorWorkerUserId
+          suggestedDisplayName = eligible.rows[0].displayName
+        }
+      }
+      stage.suggestedAssigneeUserId = suggestedUserId
+      stage.suggestedAssigneeDisplayName = suggestedDisplayName
+    }
+    return stages
+  }
+
+  private async attachCorrectionEvidence(
+    db: Queryable,
+    stages: StageExecutionSummary[]
+  ): Promise<StageExecutionSummary[]> {
+    for (const stage of stages) {
+      const result = await db.query<{
+        reason: string | null
+        createdAt: Date | string
+        actorUserId: string
+        actorDisplayName: string
+        payload: Record<string, unknown> | null
+      }>(
+        `SELECT sa.reason, sa.created_at AS "createdAt", sa.actor_user_id AS "actorUserId",
+                a.display_name AS "actorDisplayName", sa.payload
+           FROM stage_action sa
+           JOIN user_account a ON a.id = sa.actor_user_id
+          WHERE sa.stage_execution_id = $1
+            AND sa.action_type = 'INTERNAL_CORRECTION_REQUESTED'
+          ORDER BY sa.created_at DESC, sa.id DESC
+          LIMIT 1`,
+        [stage.id]
+      )
+      const evidence = result.rows[0]
+      if (!evidence) continue
+      const payload = evidence.payload ?? {}
+      stage.correctionReason = evidence.reason
+      stage.correctionRequestedAt = new Date(evidence.createdAt).toISOString()
+      stage.correctionRequestedByUserId = evidence.actorUserId
+      stage.correctionRequestedByDisplayName = evidence.actorDisplayName
+      stage.correctionPreviousAssigneeUserId = typeof payload.previousAssigneeUserId === 'string'
+        ? payload.previousAssigneeUserId
+        : null
+      stage.correctionAssigneeUserId = typeof payload.correctionAssigneeUserId === 'string'
+        ? payload.correctionAssigneeUserId
+        : null
+      stage.managerHandledCorrectionPersonally = payload.managerHandledPersonally === true
+    }
+    return stages
+  }
+
+  /**
+   * Phase 7: safe assignable-subordinate listing for the current effective unit manager.
+   * The unit is derived from the caller's own active membership + active manager
+   * assignment; the caller never supplies a unit identifier.
+   */
+  async getManagerSubordinates(actor: WorkflowRequestContext): Promise<ManagerSubordinateSummary[]> {
+    await requireOperationalUser(this.pool, actor.userId)
+
+    const managedUnitResult = await this.pool.query<{ unitId: string }>(
+      `SELECT m.unit_id AS "unitId"
+         FROM user_unit_membership m
+         JOIN unit_manager_assignment ma
+           ON ma.unit_id = m.unit_id
+          AND ma.manager_user_id = m.user_id
+          AND ma.effective_to IS NULL
+         JOIN operational_unit u
+           ON u.id = m.unit_id
+          AND u.is_active = TRUE
+        WHERE m.user_id = $1
+          AND m.effective_to IS NULL`,
+      [actor.userId]
+    )
+    const unitId = managedUnitResult.rows[0]?.unitId
+    if (!unitId) {
+      throw new AppError(403, 'Current active unit manager authority required', 'UNIT_MANAGER_REQUIRED')
+    }
+
+    const result = await this.pool.query<ManagerSubordinateSummary>(
+      `SELECT a.id AS "userId", a.username, a.display_name AS "displayName", a.job_title AS "jobTitle"
+         FROM user_unit_membership m
+         JOIN user_account a
+           ON a.id = m.user_id
+          AND a.is_active = TRUE
+          AND a.account_type = 'OPERATIONAL'
+         LEFT JOIN unit_manager_assignment ma
+           ON ma.unit_id = m.unit_id
+          AND ma.manager_user_id = m.user_id
+          AND ma.effective_to IS NULL
+        WHERE m.unit_id = $1
+          AND m.effective_to IS NULL
+          AND ma.id IS NULL
+          AND m.user_id <> $2
+        ORDER BY a.display_name`,
+      [unitId, actor.userId]
+    )
+    return result.rows
+  }
+
+  /**
+   * Phase 7: safe read view of immutable workflow_signoff evidence for one request.
+   * Uses the same request-read authorization boundary as request/timeline/document reads.
+   * Returns frozen signer snapshots only — no storage keys, checksums, or secrets.
+   */
+  async getRequestSignoffs(
+    requestIdValue: unknown,
+    actor: WorkflowRequestContext
+  ): Promise<WorkflowSignoffView[]> {
+    const requestId = uuid(requestIdValue, 'requestId')
+    await requireOperationalUser(this.pool, actor.userId)
+    await requireRequestReadAccess(this.pool, actor.userId, requestId)
+
+    const result = await this.pool.query<{
+      id: string
+      stageExecutionId: string
+      iterationNo: number
+      stageCode: StageCode
+      executionNo: number
+      signerUserId: string
+      signerSnapshot: Record<string, unknown> | null
+      signatureAssetId: string | null
+      signedAt: Date
+    }>(
+      `SELECT s.id, s.stage_execution_id AS "stageExecutionId",
+              wi.iteration_no AS "iterationNo",
+              se.stage_code AS "stageCode", se.execution_no AS "executionNo",
+              s.signer_user_id AS "signerUserId",
+              s.signer_snapshot AS "signerSnapshot",
+              s.signature_asset_id AS "signatureAssetId",
+              s.signed_at AS "signedAt"
+         FROM workflow_signoff s
+         JOIN stage_execution se ON se.id = s.stage_execution_id
+         JOIN workflow_iteration wi ON wi.id = se.iteration_id
+        WHERE wi.request_id = $1
+        ORDER BY wi.iteration_no, se.execution_no, s.signed_at, s.id`,
+      [requestId]
+    )
+
+    return result.rows.map(r => {
+      const snapshot = r.signerSnapshot ?? {}
+      return {
+        id: r.id,
+        stageExecutionId: r.stageExecutionId,
+        iterationNo: Number(r.iterationNo),
+        stageCode: r.stageCode,
+        executionNo: Number(r.executionNo),
+        signerUserId: r.signerUserId,
+        signerDisplayName: typeof snapshot.signerName === 'string' ? snapshot.signerName : '',
+        signerJobTitle: typeof snapshot.signerJobTitle === 'string' ? snapshot.signerJobTitle : '',
+        jobTitleWasOverridden: snapshot.jobTitleWasOverridden === true,
+        signatureAssetId: r.signatureAssetId,
+        signedAt: new Date(r.signedAt).toISOString()
+      }
+    })
   }
 
   async getMyWork(
@@ -2183,7 +2532,7 @@ export class WorkflowEngineService {
       [actor.userId]
     )
 
-    return result.rows.map(r => this.mapStageSummary(r))
+    return await this.attachCorrectionEvidence(this.pool, result.rows.map(r => this.mapStageSummary(r)))
   }
 
   async getRequest(
@@ -2233,12 +2582,55 @@ export class WorkflowEngineService {
   async listRequests(
     actor: WorkflowRequestContext,
     skip = 0,
-    top = 50
+    top = 50,
+    filters:{query?:string|null,status?:string|null,requestType?:string|null}={}
   ): Promise<WorkflowRequestSummary[]> {
     await requireOperationalUser(this.pool, actor.userId)
 
+    const values:unknown[]=[actor.userId]
+    const filtered:string[]=[]
+    if(filters.query){const parameter=`$${values.push(`%${filters.query}%`)}`;filtered.push(`(wr.request_number ILIKE ${parameter} OR ru.name_ar ILIKE ${parameter} OR creator.display_name ILIKE ${parameter} OR wr.id IN (SELECT rc.request_id FROM request_candidate rc JOIN employee_annual_snapshot es ON es.id=rc.employee_snapshot_id WHERE es.personnel_number ILIKE ${parameter} OR rc.frozen_data->>'employeeName' ILIKE ${parameter}))`)}
+    if(filters.status)filtered.push(`wr.status=$${values.push(filters.status)}`)
+    if(filters.requestType)filtered.push(`wr.request_type=$${values.push(filters.requestType)}`)
+
     const result = await this.pool.query<RequestRow>(
-      `SELECT DISTINCT wr.id, wr.request_number AS "requestNumber", wr.request_type AS "requestType",
+      `WITH accessible_request AS (
+         SELECT wr_scope.id
+           FROM workflow_request wr_scope
+          WHERE wr_scope.created_by_user_id = $1
+         UNION
+         SELECT wi2.request_id
+           FROM work_assignment wa
+           JOIN stage_execution se2 ON se2.id = wa.stage_execution_id
+           JOIN workflow_iteration wi2 ON wi2.id = se2.iteration_id
+          WHERE wa.assigned_to_user_id = $1 OR wa.assigned_by_user_id = $1
+         UNION
+         SELECT wi3.request_id
+           FROM stage_action sa
+           JOIN stage_execution se3 ON se3.id = sa.stage_execution_id
+           JOIN workflow_iteration wi3 ON wi3.id = se3.iteration_id
+          WHERE sa.actor_user_id = $1
+         UNION
+         SELECT wn.request_id
+           FROM workflow_note wn
+          WHERE wn.author_user_id = $1
+         UNION
+         SELECT wi4.request_id
+           FROM stage_execution se4
+           JOIN workflow_iteration wi4 ON wi4.id = se4.iteration_id
+           JOIN unit_manager_assignment ma ON ma.unit_id = se4.responsible_unit_id AND ma.manager_user_id = $1 AND ma.effective_to IS NULL
+           JOIN user_unit_membership m ON m.unit_id = se4.responsible_unit_id AND m.user_id = $1 AND m.effective_to IS NULL
+         UNION
+         SELECT wr_hr.id
+           FROM workflow_request wr_hr
+          WHERE EXISTS (
+                SELECT 1 FROM operational_unit hr
+                JOIN unit_manager_assignment ma_hr ON ma_hr.unit_id = hr.id AND ma_hr.manager_user_id = $1 AND ma_hr.effective_to IS NULL
+                JOIN user_unit_membership m_hr ON m_hr.unit_id = hr.id AND m_hr.user_id = $1 AND m_hr.effective_to IS NULL
+                WHERE hr.kind = 'HR' AND hr.is_active = TRUE
+              )
+       )
+       SELECT wr.id, wr.request_number AS "requestNumber", wr.request_type AS "requestType",
               wr.routing_unit_id AS "routingUnitId", ru.name_ar AS "routingUnitNameAr",
               ru.code AS "routingUnitCode", wr.status, wr.current_iteration_id AS "currentIterationId",
               wi.iteration_no AS "currentIterationNo", wr.current_stage_code AS "currentStageCode",
@@ -2247,45 +2639,17 @@ export class WorkflowEngineService {
               wr.version, wr.created_by_user_id AS "createdByUserId",
               creator.display_name AS "createdByUserDisplayName",
               wr.created_at AS "createdAt", wr.completed_at AS "completedAt", wr.cancelled_at AS "cancelledAt"
-         FROM workflow_request wr
+         FROM accessible_request access
+         JOIN workflow_request wr ON wr.id = access.id
          LEFT JOIN routing_unit ru ON ru.id = wr.routing_unit_id
          LEFT JOIN workflow_iteration wi ON wi.id = wr.current_iteration_id
          LEFT JOIN stage_execution current_se ON current_se.iteration_id = wr.current_iteration_id AND current_se.status = 'OPEN'
          LEFT JOIN operational_unit u ON u.id = current_se.responsible_unit_id
          LEFT JOIN user_account creator ON creator.id = wr.created_by_user_id
-        WHERE wr.created_by_user_id = $1
-           OR EXISTS (
-                SELECT 1 FROM work_assignment wa
-                JOIN stage_execution se2 ON se2.id = wa.stage_execution_id
-                JOIN workflow_iteration wi2 ON wi2.id = se2.iteration_id
-                WHERE wi2.request_id = wr.id AND (wa.assigned_to_user_id = $1 OR wa.assigned_by_user_id = $1)
-              )
-           OR EXISTS (
-                SELECT 1 FROM stage_action sa
-                JOIN stage_execution se3 ON se3.id = sa.stage_execution_id
-                JOIN workflow_iteration wi3 ON wi3.id = se3.iteration_id
-                WHERE wi3.request_id = wr.id AND sa.actor_user_id = $1
-              )
-           OR EXISTS (
-                SELECT 1 FROM workflow_note wn
-                WHERE wn.request_id = wr.id AND wn.author_user_id = $1
-              )
-           OR EXISTS (
-                SELECT 1 FROM stage_execution se4
-                JOIN workflow_iteration wi4 ON wi4.id = se4.iteration_id
-                JOIN unit_manager_assignment ma ON ma.unit_id = se4.responsible_unit_id AND ma.manager_user_id = $1 AND ma.effective_to IS NULL
-                JOIN user_unit_membership m ON m.unit_id = se4.responsible_unit_id AND m.user_id = $1 AND m.effective_to IS NULL
-                WHERE wi4.request_id = wr.id
-              )
-           OR EXISTS (
-                SELECT 1 FROM operational_unit hr
-                JOIN unit_manager_assignment ma_hr ON ma_hr.unit_id = hr.id AND ma_hr.manager_user_id = $1 AND ma_hr.effective_to IS NULL
-                JOIN user_unit_membership m_hr ON m_hr.unit_id = hr.id AND m_hr.user_id = $1 AND m_hr.effective_to IS NULL
-                WHERE hr.kind = 'HR' AND hr.is_active = TRUE
-              )
+        ${filtered.length?`WHERE ${filtered.join(' AND ')}`:''}
         ORDER BY wr.created_at DESC
-        LIMIT $2 OFFSET $3`,
-      [actor.userId, top, skip]
+        LIMIT $${values.push(top)} OFFSET $${values.push(skip)}`,
+      values
     )
 
     return result.rows.map(r => this.mapRequestSummary(r))
@@ -2397,7 +2761,7 @@ export class WorkflowEngineService {
     )
     const row = result.rows[0]
     if (!row) throw new AppError(404, 'Stage execution not found', 'STAGE_NOT_FOUND')
-    return this.mapStageSummary(row)
+    return (await this.attachCorrectionEvidence(db, [this.mapStageSummary(row)]))[0]!
   }
 
   private mapRequestSummary(row: RequestRow): WorkflowRequestSummary {

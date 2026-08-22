@@ -1,8 +1,14 @@
-export type Role = 'ADMIN' | 'EMPLOYEE_AFFAIRS' | 'ORGANIZATION' | 'APPROVING_AUTHORITY'
+export type AccountType = 'ADMIN' | 'OPERATIONAL'
+export type UnitKind = 'HR' | 'ORG' | 'AUTH'
 
-export interface RoleAssignment {
-  role: Role
-  canManageAdmins: boolean
+export interface OperationalContext {
+  membershipId: string
+  unitId: string
+  unitKind: UnitKind
+  routingUnitId: string | null
+  routingUnitName: string | null
+  isManager: boolean
+  managerAssignmentId: string | null
 }
 
 export interface UserContext {
@@ -11,19 +17,17 @@ export interface UserContext {
   staffIdentifier: string | null
   displayName: string
   jobTitle: string | null
+  accountType: AccountType
   mustChangePassword: boolean
-  isActive: boolean
-  accountType?: 'ADMIN' | 'OPERATIONAL'
-  operationalContext?: null | { membershipId:string; unitId:string; unitKind:'HR'|'ORG'|'AUTH'; routingUnitId:string|null; routingUnitName:string|null; isManager:boolean; managerAssignmentId:string|null }
-  /** @deprecated retained only so deferred workflow components type-check. */
-  activeRole?: Role | null // Keep for type-checking legacy components, but not used in logic
-  /** @deprecated retained only so deferred workflow components type-check. */
-  availableRoles: RoleAssignment[]
+  operationalContext: OperationalContext | null
 }
 
 export interface ApiErrorPayload {
-  error?: {
-    code?: string
-    message?: string
-  }
+  error?: { code?: string, message?: string }
+}
+
+export const UNIT_KIND_LABELS: Record<UnitKind, string> = {
+  HR: 'الموارد البشرية',
+  ORG: 'التنظيم',
+  AUTH: 'السلطة المختصة'
 }

@@ -1,93 +1,94 @@
-import { useState } from 'react'
-import { ArrowLeft, BriefcaseBusiness, CalendarDays, FilePlus2, UsersRound } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ApiError, apiJson } from '../api/client'
-import type { WorkflowRequestDetail } from '../api/workflow-types'
+import { workflowApi, referenceApi } from '../api/endpoints'
+import { arabicErrorMessage } from '../api/messages'
+import type { RoutingUnitOption, WorkflowRequestType } from '../api/workflow-types'
 
-type RequestType = 'PROMOTION' | 'SECONDMENT'
-
-function message(error: unknown): string {
-  if (error instanceof ApiError) return error.message
-  return 'تعذر إنشاء الطلب. يرجى المحاولة مرة أخرى.'
-}
-
+/** HR operational request creation: {requestType, routingUnitId} only — no legacy form-period fields. */
 export function NewRequestPage(): React.JSX.Element {
   const navigate = useNavigate()
-  const now = new Date()
-  const [requestType, setRequestType] = useState<RequestType>('PROMOTION')
-  const [cycleYear, setCycleYear] = useState(now.getFullYear())
-  const [formMonth, setFormMonth] = useState(now.getMonth() + 1)
-  const [formYear, setFormYear] = useState(now.getFullYear())
-  const [submitting, setSubmitting] = useState(false)
+  const [requestType, setRequestType] = useState<WorkflowRequestType>('PROMOTION')
+  const [routingUnitId, setRoutingUnitId] = useState('')
+  const [units, setUnits] = useState<RoutingUnitOption[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    referenceApi.routingUnits()
+      .then(list => {
+        if (!active) return
+        const activeUnits = list.filter(unit => unit.isActive)
+        setUnits(activeUnits)
+        if (activeUnits.length === 1) setRoutingUnitId(activeUnits[0]!.id)
+      })
+      .catch(requestError => { if (active) setError(arabicErrorMessage(requestError)) })
+    return () => { active = false }
+  }, [])
 
   async function submit(event: React.FormEvent): Promise<void> {
     event.preventDefault()
-    setSubmitting(true)
+    if (busy || !routingUnitId) return
+    setBusy(true)
     setError(null)
     try {
-      const created = await apiJson<WorkflowRequestDetail>('/api/workflow/requests', 'POST', {
-        requestType, cycleYear, formMonth, formYear
-      })
-      navigate(`/requests/${created.id}`, { replace: true })
-    } catch (caught) {
-      setError(message(caught))
-    } finally {
-      setSubmitting(false)
+      const created = await workflowApi.createRequest({ requestType, routingUnitId })
+      navigate(`/requests/${created.id}`)
+    } catch (requestError) {
+      setError(arabicErrorMessage(requestError))
+      setBusy(false)
     }
   }
 
-  return <div className="page-stack request-create-page">
-    <header className="page-heading">
-      <div>
-        <p>الطلبات / طلب جديد</p>
-        <h1>إنشاء طلب ترقية أو ندب</h1>
-        <span>ابدأ المسودة ثم أضف العاملين من اللقطة السنوية النشطة.</span>
-      </div>
-    </header>
+  const typeOptions = useMemo(() => ([
+    { value: 'PROMOTION' as WorkflowRequestType, title: 'طلب ترقية', body: 'مسار الترقيات P1 → P2 → P3 → P4 → (P4O) → P5' },
+    { value: 'SECONDMENT' as WorkflowRequestType, title: 'طلب ندب', body: 'مسار الندب S1 → S2 → S3 → S4 → S5' }
+  ]), [])
 
-    <form className="panel request-create" onSubmit={event => void submit(event)}>
-      <div className="panel__header">
-        <div><h2>بيانات الطلب الأساسية</h2><p>يمكن استكمال العاملين ومسار الاعتماد بعد حفظ المسودة.</p></div>
-        <FilePlus2 size={24} aria-hidden="true" />
-      </div>
-      <div className="request-create__body">
+  return (
+    <div className="page-stack narrow">
+      <header className="page-header">
+        <h1>إنشاء طلب جديد</h1>
+      </header>
+
+      <form className="card" onSubmit={event => void submit(event)} aria-label="إنشاء طلب">
+        {error && <p className="error" role="alert">{error}</p>}
+
         <fieldset className="type-picker">
           <legend>نوع الطلب</legend>
-          <label className={requestType === 'PROMOTION' ? 'type-card type-card--selected' : 'type-card'}>
-            <input type="radio" name="requestType" value="PROMOTION" checked={requestType === 'PROMOTION'} onChange={() => setRequestType('PROMOTION')} />
-            <span className="type-card__icon"><BriefcaseBusiness /></span>
-            <span><strong>ترقية</strong><small>مسار طلبات الترقية للعاملين</small></span>
-          </label>
-          <label className={requestType === 'SECONDMENT' ? 'type-card type-card--selected' : 'type-card'}>
-            <input type="radio" name="requestType" value="SECONDMENT" checked={requestType === 'SECONDMENT'} onChange={() => setRequestType('SECONDMENT')} />
-            <span className="type-card__icon"><UsersRound /></span>
-            <span><strong>ندب</strong><small>مسار طلبات الندب بين الوظائف</small></span>
-          </label>
+          {typeOptions.map(option => (
+            <label key={option.value} className={`type-card${requestType === option.value ? ' type-card--selected' : ''}`}>
+              <input
+                type="radio"
+                name="requestType"
+                value={option.value}
+                checked={requestType === option.value}
+                onChange={() => setRequestType(option.value)}
+              />
+              <strong>{option.title}</strong>
+              <small>{option.body}</small>
+            </label>
+          ))}
         </fieldset>
 
-        <div className="form-grid">
-          <label>سنة الدورة
-            <span className="field-shell"><CalendarDays size={18} /><input type="number" min="2000" max="2200" required value={cycleYear} onChange={event => setCycleYear(Number(event.target.value))} /></span>
-          </label>
-          <label>شهر النموذج
-            <select value={formMonth} onChange={event => setFormMonth(Number(event.target.value))}>
-              {Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{new Intl.DateTimeFormat('ar-EG', { month: 'long' }).format(new Date(2026, index, 1))}</option>)}
-            </select>
-          </label>
-          <label>سنة النموذج
-            <input type="number" min="2000" max="2200" required value={formYear} onChange={event => setFormYear(Number(event.target.value))} />
-          </label>
-        </div>
-        <div className="state-banner state-banner--info">
-          <UsersRound size={20} /><div><strong>بيانات حقيقية فقط</strong><span>لن تُضاف أي بيانات تجريبية. البحث التالي يعتمد حصراً على اللقطة السنوية النشطة في قاعدة البيانات.</span></div>
-        </div>
-        {error && <p className="error" role="alert">{error}</p>}
-      </div>
-      <footer className="form-actions">
-        <button className="button button--secondary" type="button" onClick={() => navigate(-1)}>إلغاء</button>
-        <button className="button button--primary" type="submit" disabled={submitting}>{submitting ? 'جارٍ إنشاء المسودة...' : <>إنشاء المسودة والمتابعة <ArrowLeft size={18} /></>}</button>
-      </footer>
-    </form>
-  </div>
+        <label className="field">
+          النيابة / وحدة التوجيه
+          <select value={routingUnitId} onChange={event => setRoutingUnitId(event.target.value)} required disabled={units === null}>
+            <option value="" disabled>{units === null ? 'جارٍ التحميل…' : 'اختر النيابة…'}</option>
+            {(units ?? []).map(unit => (
+              <option key={unit.id} value={unit.id}>{unit.nameAr} ({unit.code})</option>
+            ))}
+          </select>
+        </label>
+        {units !== null && units.length === 0 && (
+          <p className="warning">لا توجد نيابات نشطة. راجع إدارة النظام.</p>
+        )}
+
+        <button type="submit" className="button button--primary" disabled={busy || !routingUnitId}>
+          {busy ? 'جارٍ الإنشاء…' : 'إنشاء الطلب والانتقال للتحضير'}
+        </button>
+        <p className="hint">بعد الإنشاء ستنتقل إلى شاشة الطلب لإضافة المرشحين برقم الموظف من أحدث لقطة سنوية مفعّلة.</p>
+      </form>
+    </div>
+  )
 }

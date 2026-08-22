@@ -53,6 +53,8 @@ export interface AssignStageInput {
 
 export interface InternalCorrectionInput {
   reason: string
+  assignedToUserId?: string
+  managerHandlesPersonally?: boolean
 }
 
 export interface ReturnPreviousInput {
@@ -231,6 +233,28 @@ export interface StageExecutionSummary {
   activeAssigneeUserId: string | null
   activeAssigneeDisplayName: string | null
   assignedAt: string | null
+  /**
+   * Presentation-only suggestion for a returned stage: the most recent worker of the
+   * prior execution of the same business stage in this iteration, when they are still
+   * an active OPERATIONAL member of this execution's responsible unit.
+   * Never creates authority; POST /stages/:id/assign remains authoritative.
+   */
+  suggestedAssigneeUserId?: string | null
+  suggestedAssigneeDisplayName?: string | null
+  correctionReason?: string | null
+  correctionRequestedAt?: string | null
+  correctionRequestedByUserId?: string | null
+  correctionRequestedByDisplayName?: string | null
+  correctionPreviousAssigneeUserId?: string | null
+  correctionAssigneeUserId?: string | null
+  managerHandledCorrectionPersonally?: boolean
+}
+
+export interface ManagerSubordinateSummary {
+  userId: string
+  username: string
+  displayName: string
+  jobTitle: string | null
 }
 
 export interface RequestCandidateSummary {
@@ -242,6 +266,39 @@ export interface RequestCandidateSummary {
   currentJobTitle: string | null
   frozenData: Record<string, unknown>
   acceptedData: Record<string, unknown>
+}
+
+/**
+ * Read-only preview for HR candidate preparation. Shares the exact annual-snapshot
+ * resolution semantics of addCandidate; creates no request_candidate row.
+ */
+export interface CandidateLookupPreview {
+  snapshotId: string
+  personnelNumber: string
+  snapshotYear: number
+  routingUnitMatchesRequest: boolean
+  alreadyAddedToRequest: boolean
+  employeeName: string
+  currentJobTitle: string | null
+  frozenData: Record<string, unknown>
+}
+
+/**
+ * Safe display view of immutable workflow_signoff evidence (frozen signer snapshot).
+ * Exposes no storage keys, checksums, or password-related material.
+ */
+export interface WorkflowSignoffView {
+  id: string
+  stageExecutionId: string
+  iterationNo: number
+  stageCode: StageCode
+  executionNo: number
+  signerUserId: string
+  signerDisplayName: string
+  signerJobTitle: string
+  jobTitleWasOverridden: boolean
+  signatureAssetId: string | null
+  signedAt: string
 }
 
 export interface WorkflowNoteSummary {

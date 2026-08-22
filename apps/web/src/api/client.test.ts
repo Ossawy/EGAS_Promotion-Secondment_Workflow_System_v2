@@ -26,14 +26,14 @@ describe('API client', () => {
 
   it('maps safe structured API failures', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      error: { code: 'ACTIVE_ROLE_REQUIRED', message: 'Active role required' }
+      error: { code: 'UNIT_MANAGER_REQUIRED', message: 'Active role required' }
     }), { status: 403, headers: { 'Content-Type': 'application/json' } }))
 
     await expect(apiJson('/api/test', 'POST', {})).rejects.toEqual(
       expect.objectContaining({
         name: 'ApiError',
         status: 403,
-        code: 'ACTIVE_ROLE_REQUIRED',
+        code: 'UNIT_MANAGER_REQUIRED',
         message: 'Active role required'
       } satisfies Partial<ApiError>)
     )

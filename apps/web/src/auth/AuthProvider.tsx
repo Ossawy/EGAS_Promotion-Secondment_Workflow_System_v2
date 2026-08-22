@@ -7,8 +7,9 @@ import {
   useState,
   type PropsWithChildren
 } from 'react'
-import { apiJson, apiRequest, ApiError } from '../api/client'
-import type { Role, UserContext } from '../api/types'
+import { ApiError } from '../api/client'
+import { authApi } from '../api/endpoints'
+import type { UserContext } from '../api/types'
 
 type AuthState = {
   user: UserContext | null
@@ -16,7 +17,6 @@ type AuthState = {
   error: string | null
   login(username: string, password: string): Promise<UserContext>
   changePassword(currentPassword: string, newPassword: string): Promise<UserContext>
-  selectRole(role: Role): Promise<UserContext>
   logout(): Promise<void>
   clearError(): void
 }
@@ -34,7 +34,7 @@ export function AuthProvider({ children }: PropsWithChildren): React.JSX.Element
 
   useEffect(() => {
     let active = true
-    apiRequest<UserContext>('/api/auth/me')
+    authApi.me()
       .then(context => { if (active) setUser(context) })
       .catch(requestError => {
         if (active && (!(requestError instanceof ApiError) || requestError.status !== 401)) {
@@ -58,22 +58,17 @@ export function AuthProvider({ children }: PropsWithChildren): React.JSX.Element
   }, [])
 
   const login = useCallback((username: string, password: string) => update(
-    () => apiJson<UserContext>('/api/auth/login', 'POST', { username, password })
+    () => authApi.login(username, password)
   ), [update])
 
   const changePassword = useCallback((currentPassword: string, newPassword: string) => update(
-    () => apiJson<UserContext>('/api/auth/change-password', 'POST', { currentPassword, newPassword })
+    () => authApi.changePassword(currentPassword, newPassword)
   ), [update])
-
-  const selectRole = useCallback(async (_role: Role) => {
-    if (!user) throw new ApiError(401, 'AUTHENTICATION_REQUIRED', 'Authentication required')
-    return user
-  }, [user])
 
   const logout = useCallback(async () => {
     setError(null)
     try {
-      await apiJson<void>('/api/auth/logout', 'POST', {})
+      await authApi.logout()
     } finally {
       setUser(null)
     }
@@ -85,10 +80,9 @@ export function AuthProvider({ children }: PropsWithChildren): React.JSX.Element
     error,
     login,
     changePassword,
-    selectRole,
     logout,
     clearError: () => setError(null)
-  }), [user, loading, error, login, changePassword, selectRole, logout])
+  }), [user, loading, error, login, changePassword, logout])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

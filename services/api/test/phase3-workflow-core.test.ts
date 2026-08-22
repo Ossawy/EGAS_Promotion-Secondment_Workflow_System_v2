@@ -86,6 +86,7 @@ beforeEach(async () => {
   db.public.registerFunction({ name: 'pg_advisory_xact_lock', args: [DataType.integer], returns: DataType.integer, implementation: () => 1 })
 
   db.public.none(await readFile(new URL('../src/db/migrations/001_initial_v5_schema.sql', import.meta.url), 'utf8'))
+  db.public.none(await readFile(new URL('../src/db/migrations/005_audit_identity_snapshots.sql', import.meta.url), 'utf8'))
   db.public.none(await readFile(new URL('../src/db/migrations/002_phase2_annual_data_integrity.sql', import.meta.url), 'utf8'))
   db.public.none(await readFile(new URL('../src/db/migrations/003_phase3_workflow_indexes.sql', import.meta.url), 'utf8'))
 
@@ -202,22 +203,17 @@ afterEach(async () => {
 })
 
 describe('Phase 3 Generic Workflow Engine Core Requirements', () => {
-  it('1. only HR current manager can create a workflow request', async () => {
+  it('1. active HR operational members can create; other units cannot', async () => {
     // ORG manager cannot create
     await expect(engine.createRequest({ requestType: 'PROMOTION', routingUnitId }, orgManager)).rejects.toMatchObject({
-      code: 'HR_MANAGER_REQUIRED'
+      code: 'UNIT_MEMBERSHIP_REQUIRED'
     })
     // AUTH manager cannot create
     await expect(engine.createRequest({ requestType: 'PROMOTION', routingUnitId }, authManager)).rejects.toMatchObject({
-      code: 'HR_MANAGER_REQUIRED'
+      code: 'UNIT_MEMBERSHIP_REQUIRED'
     })
-    // Ordinary HR subordinate cannot create
-    await expect(engine.createRequest({ requestType: 'PROMOTION', routingUnitId }, hrSubordinate)).rejects.toMatchObject({
-      code: 'HR_MANAGER_REQUIRED'
-    })
-
-    // HR manager can create
-    const created = await engine.createRequest({ requestType: 'PROMOTION', routingUnitId }, hrManager)
+    // HR employee can create and owns initial work without a fake role.
+    const created = await engine.createRequest({ requestType: 'PROMOTION', routingUnitId }, hrSubordinate)
     expect(created.requestType).toBe('PROMOTION')
     expect(created.status).toBe('DRAFT')
     expect(created.currentStageCode).toBe('P1')
@@ -233,14 +229,15 @@ describe('Phase 3 Generic Workflow Engine Core Requirements', () => {
     const promo = await engine.createRequest({ requestType: 'PROMOTION', routingUnitId }, hrManager)
     expect(promo.currentIterationNo).toBe(1)
     expect(promo.currentStageCode).toBe('P1')
-    expect(promo.currentWorkState).toBe('MANAGER_INBOX')
+    expect(promo.currentWorkState).toBe('IN_PROGRESS')
     expect(promo.currentResponsibleUnitId).toBe(hrUnitId)
 
     const sec = await engine.createRequest({ requestType: 'SECONDMENT', routingUnitId }, hrManager)
     expect(sec.currentIterationNo).toBe(1)
     expect(sec.currentStageCode).toBe('S1')
-    expect(sec.currentWorkState).toBe('MANAGER_INBOX')
+    expect(sec.currentWorkState).toBe('IN_PROGRESS')
     expect(sec.currentResponsibleUnitId).toBe(hrUnitId)
+    expect((await engine.getMyWork(hrManager)).map(stage => stage.id)).toContain(sec.currentExecutionId)
   })
 
   it('4 & 5. candidate data is frozen from active snapshot and cross-routing candidates are rejected', async () => {
